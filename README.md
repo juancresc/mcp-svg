@@ -3,6 +3,11 @@
 Basic web SVG editor and MCP to allow claude to draw, edit and preview the content of the canvas.
 
 
+[![Demo]](https://youtu.be/_wV0kU_m0hc)
+
+
+
+
 Start the project
 ```
 docker compose up
