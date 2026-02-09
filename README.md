@@ -1,4 +1,4 @@
-<img width="1479" height="749" alt="ss2" src="https://github.com/user-attachments/assets/c7d58000-40d3-49b8-ba25-1dffdf0f7cbb" />### MCP-first SVG editor
+### MCP-first SVG edito
 
 Basic web SVG editor and MCP to allow claude to draw, edit and preview the content of the canvas.
 
