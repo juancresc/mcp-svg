@@ -1,0 +1,10 @@
+- Id like an easier way to select elements, specially for lines is too hard sometimes, maybe selecting in a square by click and drag.
+- when selecting and code is opened, highlight the element in the code
+- zoom functionality, could be scrolling up and down. And a new tool taht is the hand that moves in the zoomed area. Also a zoom control at the top
+- when the code viewer is opened, there should not be a scrollbar, it should fit the screen. 
+- new file, allow me to enter canvas size in cms or inches
+- Import files
+- We could have a file explorer and files under data/ mounting that to docker. Save file, import etc and an explorer.
+- I should be able to add or edit or remove layers in the UI, also from the mcp. I should be able to show or hide. Also move elements from layers. All from the UI and MCP
+- changeset? to allow rollbacks. we might need a storage system for that. 
+- export to cad

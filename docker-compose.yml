@@ -1,0 +1,12 @@
+services:
+  svg-mcp:
+    build: ./mcp-server
+    ports:
+      - "8765:8765"
+      - "8766:8766"
+    environment:
+      - HTTP_PORT=8765
+      - MCP_PORT=8766
+    volumes:
+      - ./index.html:/app/index.html:ro
+    stdin_open: true
