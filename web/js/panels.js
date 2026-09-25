@@ -211,7 +211,30 @@ const LABELS = { diameter: '⌀', 'font-size': 'size' };
 
 export function renderInspector() {
   renderInspectorContent();
+  sectionize();
   fitPreviews();
+}
+
+// Each <h3> and what follows it becomes a collapsible section; closed ones are remembered
+const CLOSED_KEY = 'kerf.inspectorClosed';
+const closedSecs = new Set((() => { try { return JSON.parse(localStorage.getItem(CLOSED_KEY)) || ['Tips']; } catch (_) { return ['Tips']; } })());
+function sectionize() {
+  for (const h of [...inspector.querySelectorAll(':scope > h3')]) {
+    const name = h.textContent.replace(/:.*/, '').trim();
+    const sec = document.createElement('details');
+    sec.className = 'sec';
+    sec.open = !closedSecs.has(name);
+    const summary = document.createElement('summary');
+    summary.innerHTML = h.innerHTML;
+    sec.append(summary);
+    let n = h.nextSibling;
+    while (n && !(n.nodeType === 1 && n.tagName === 'H3')) { const next = n.nextSibling; sec.append(n); n = next; }
+    h.replaceWith(sec);
+    sec.addEventListener('toggle', () => {
+      sec.open ? closedSecs.delete(name) : closedSecs.add(name);
+      try { localStorage.setItem(CLOSED_KEY, JSON.stringify([...closedSecs])); } catch (_) {}
+    });
+  }
 }
 
 function renderInspectorContent() {

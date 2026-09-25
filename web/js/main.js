@@ -93,6 +93,26 @@ function applySide() {
   updateToolbar();
   requestAnimationFrame(canvas.drawRulers);
 }
+// Side panel width: drag its left edge (remembered)
+const resizer = document.getElementById('side-resizer');
+const setSideW = (w) => document.documentElement.style.setProperty('--side-w', Math.max(260, Math.min(560, w)) + 'px');
+try { const w = +localStorage.getItem('kerf.sideW'); if (w) setSideW(w); } catch (_) {}
+resizer.addEventListener('pointerdown', (e) => {
+  e.preventDefault();
+  resizer.setPointerCapture(e.pointerId);
+  resizer.classList.add('dragging');
+  const right = side.getBoundingClientRect().right;
+  const move = (ev) => { setSideW(right - ev.clientX); canvas.drawRulers(); };
+  const up = () => {
+    resizer.classList.remove('dragging');
+    resizer.removeEventListener('pointermove', move);
+    try { localStorage.setItem('kerf.sideW', side.getBoundingClientRect().width); } catch (_) {}
+  };
+  resizer.addEventListener('pointermove', move);
+  resizer.addEventListener('pointerup', up, { once: true });
+});
+resizer.addEventListener('dblclick', () => { setSideW(320); try { localStorage.removeItem('kerf.sideW'); } catch (_) {} canvas.drawRulers(); });
+
 // Edit links in the 3D panel
 document.addEventListener('rename-project', () => actions.renameProject());
 document.addEventListener('material-dialog', () => actions.materialDialog());
