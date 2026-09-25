@@ -1,3 +1,4 @@
 data/
 docs/
-.DS_Store
+.DS_Store.env
+backups/

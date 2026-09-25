@@ -42,6 +42,14 @@ In the editor, click **Connect Claude** (top right, or Help → Connect Claude).
 
 Each has a Copy button.
 
+## Share links
+
+`http://<editor>/?open=<file>` opens a project from the data folder, or switches to its tab if it's already open. Add `&view=3d` to open it in 3D. Example: `/?open=desk/desk.kerf&view=3d`.
+
+**File → Copy link to this project** copies the link for the current tab. The project must be saved in the data folder, and the current 2D/3D view is included.
+
+A missing file just shows "not found". When deployed, a link like `/?token=…&open=…` signs in first and then opens the file.
+
 ## Deploying (reachable from other machines)
 
 By default Kerf only answers on this computer. To put it on a server, set these in `docker-compose.yml` → `environment`, and publish the ports (or put a reverse proxy in front):
