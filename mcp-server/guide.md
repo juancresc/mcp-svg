@@ -7,7 +7,7 @@ Kerf is a CAD-style editor for CNC-cut parts: flat parts cut from sheet material
 1. **Ask first** if it isn't clear:
    - what the object is, its overall size, and who uses it (children? load?);
    - the material and thickness (default: 18 mm birch plywood);
-   - the **CNC machine's working area**. Common sizes: 6090 = 600 × 900, Shapeoko XXL = 838 × 838, 1212 = 1200 × 1200, 1325 = 1300 × 2500 (full sheets).
+   - **the stock / machine: default to full 2440 × 1220 sheets** unless the user gives something else. If they name a machine or stock size, use it; common ones: 6090 = 600 × 900, quarter sheet = 1220 × 610, Shapeoko XXL = 838 × 838, 1212 = 1200 × 1200, 1325 = 1300 × 2500 (full sheets). Don't hold up the design to ask about it.
 2. **Set up the project:**
    - `new_document` (or reuse an empty tab);
    - `set_project_name` with a readable name;
@@ -20,7 +20,7 @@ Kerf is a CAD-style editor for CNC-cut parts: flat parts cut from sheet material
    - then `update_group` with `qty` and the `assembly` (3D placement, see below).
 
    That's one undo step per part.
-5. **Lay the parts out for the machine.** Draw each bed or sheet outline as a rectangle on NOTES, with a label ("BED 1 / 3 — 838 × 838"). Keep a 15 mm margin inside it for clamps. Say clearly which parts are too big: plain rectangles can be cut with a saw.
+5. **Lay the parts out on sheets** (2440 × 1220 unless the user said otherwise). Draw each sheet or bed outline as a rectangle on NOTES, with a label ("SHEET 1 / 2 — 2440 × 1220"). Keep a 15 mm margin inside it for clamps, and use as few sheets as you reasonably can. If the user gave a smaller machine, say clearly which parts are too big: plain rectangles can be cut with a saw.
 6. **Check your work:**
    - `check_cnc`;
    - `take_screenshot` with `view="2d"`, then `"3d"` and `"3d-exploded"` (needs the editor open in a browser).

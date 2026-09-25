@@ -6,12 +6,12 @@ import { modal, toast, esc, copyText } from './ui.js';
 const q = (s) => `'${s.replace(/'/g, `'\\''`)}'`;   // shell single-quote
 
 // What to say to Claude once it's connected (the design request goes in the blanks)
-const ASK = `My CNC's working area: ___ × ___ mm (e.g. 1220 × 610). Material: 18 mm birch plywood.
-I want to design: ___ (what it is, overall size, who uses it).`;
+const ASK = `I want to design: ___ (what it is, overall size, who uses it).
+Material: 18 mm birch plywood. Lay it out on full 2440 × 1220 sheets (or my CNC / stock size: ___ — optional).`;
 const MCP_PROMPT = (editor) => `You're connected to my Kerf CNC editor (MCP server "kerf"); I watch every change live at ${editor}
 First call get_guide and follow it (workflow, layers, 3D placement recipes, CNC rules).
 ${ASK}
-Ask me anything essential before drawing. Build one part per apply_ops batch, lay the parts out for my machine,
+Ask me anything essential before drawing. Build one part per apply_ops batch, lay the parts out on sheets,
 check with check_cnc and take_screenshot (2d, 3d, 3d-exploded), then save_document and give me the link.`;
 
 function snippets({ editor_url, api_url, mcp_url, token }) {

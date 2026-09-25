@@ -72,7 +72,7 @@ INSTRUCTIONS = f"""Kerf — a CNC design editor shared with the user (they see e
 - Several documents can be open (tabs); all tools act on the active tab (list_tabs / switch_tab).
 - get_selection tells you what the user selected ("this part"); set_selection highlights for them.
 - Check your work with take_screenshot (view "2d", "3d", "3d-exploded"). Prefer apply_ops (one undo per part).
-- Ask for the CNC machine's working area and lay the parts out in beds/sheets drawn on NOTES.
+- Lay the parts out on full 2440 × 1220 sheets (outlines on NOTES) unless the user gives a machine or stock size.
 - Name the project (set_project_name); after save_document give the share link {EDITOR_URL}/?open=<file>.
 - Never discard the user's unsaved work or close their tabs without asking."""
 try:
@@ -831,12 +831,12 @@ def get_guide(topic: str = "") -> str:
 def design_furniture(description: str, machine: str = "") -> str:
     """Design a piece of furniture (or any multi-part object) in Kerf, ready to cut on the user's CNC."""
     return (f"Design this in the Kerf editor: {description}\n"
-            f"CNC machine / working area: {machine or 'unknown — ask me first (e.g. 6090 = 600×900, Shapeoko XXL = 838×838, 1325 = full sheet)'}.\n"
+            f"Stock / machine: {machine or 'full 2440 × 1220 plywood sheets (default)'}.\n"
             "1. Call get_guide and follow it (workflow, layers, 3D placement recipes, CNC rules).\n"
             "2. Ask me anything essential that's missing (size, material/thickness, who uses it).\n"
             "3. new_document, set_project_name, set_material, add the layers you need (HARDWARE, pocket layers).\n"
             "4. Work out the dimensions, then build one part per apply_ops batch (shapes + group + update_group with qty and assembly).\n"
-            "5. Lay the parts out in beds/sheets for my machine (outlines on NOTES); list parts that don't fit.\n"
+            "5. Lay the parts out on sheets (or my machine's beds) with outlines on NOTES; list parts that don't fit.\n"
             "6. check_cnc, then take_screenshot 2d, 3d and 3d-exploded; fix what looks wrong.\n"
             "7. Add notes (hardware list, cut order, assembly, safety), save_document and give me the share link.")
 
