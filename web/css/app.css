@@ -431,3 +431,20 @@ dialog.wide { min-width: 560px; }
 .num-box input { width: 70px; padding: 3px 5px; border: 1px solid var(--border); border-radius: 4px; font: 12px var(--mono); color: var(--text); }
 .num-box input:focus { outline: none; border-color: var(--accent); }
 .num-box button { border: 0; background: var(--accent); color: #fff; border-radius: 4px; padding: 3px 8px; cursor: pointer; }
+
+/* 3D slider editor */
+.params-edit { display: grid; gap: 4px; }
+.param-row, .param-head { display: grid; grid-template-columns: 1.6fr 1fr 1fr .8fr 1fr 24px; gap: 4px; align-items: center; }
+.param-row input { min-width: 0; padding: 3px 4px; border: 1px solid var(--border); border-radius: 4px; font: 11px var(--mono); }
+.param-head { font-size: 9.5px; color: var(--muted); order: -1; }
+
+/* Drawing | 3D views inside a document tab */
+.tab-views { display: inline-flex; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; margin-left: 4px; }
+.tab-views button { border: 0; background: #fff; color: var(--muted); font-size: 10.5px; padding: 1px 7px; cursor: pointer; }
+.tab-views button + button { border-left: 1px solid var(--border); }
+.tab-views button.on { background: var(--accent); color: #fff; }
+
+/* Material chip in the toolbar */
+.tb-material { border: 1px solid rgba(255,255,255,.18); margin-right: 6px; max-width: 240px; }
+.tb-material span:last-child { overflow: hidden; text-overflow: ellipsis; }
+.mat-dot { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(255,255,255,.4); flex-shrink: 0; }

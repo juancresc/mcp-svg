@@ -1,4 +1,5 @@
 import json
+import re
 
 import pytest
 
@@ -107,13 +108,13 @@ def test_save_open_roundtrip(store, tmp_path):
     assert d.next_id > int(eid.split("-")[1])
 
 
-def test_cnc_export_skips_non_export_and_hidden_layers(store):
+def test_cnc_export_uses_the_export_flag_not_visibility(store):
     add_rect(store, layer="CUT_OUTSIDE")
     add_rect(store, layer="NOTES")
     add_rect(store, layer="ENGRAVE")
     store.apply([{"op": "set_layer_visibility", "name": "ENGRAVE", "visible": False}])
-    svg = store.doc.to_svg("cnc")
-    assert svg.count("<rect") == 1 and 'width="800mm"' in svg and "inkscape" not in svg
+    svg = store.doc.to_svg("cnc")          # hidden ENGRAVE is still cut; NOTES never is
+    assert svg.count("<rect") == 2 and 'width="800mm"' in svg and "inkscape" not in svg
 
 
 def test_tabs_open_switch_close(store):
@@ -374,3 +375,72 @@ def test_closing_the_last_tab_opens_a_fresh_one(store):
     only = store.active_id
     store.close()
     assert len(store.tabs) == 1 and store.active_id != only and store.state()["name"] == "Untitled"
+
+
+def test_loaded_files_are_sanitized(store):
+    from document import to_native
+    from xml.sax.saxutils import quoteattr
+    meta = json.dumps({"groups": [{"id": 'g-1"><img src=x onerror=alert(1)>', "name": "x"}, {"id": "g-2", "name": "ok"}]})
+    evil = ('<svg xmlns="http://www.w3.org/2000/svg" xmlns:inkscape="http://www.inkscape.org/namespaces/inkscape" viewBox="0 0 100 100">'
+            f'<metadata data-kerf={quoteattr(meta)}/>'
+            f'<g inkscape:groupmode="layer" inkscape:label="A" data-line-style={quoteattr(chr(34) + "/><img src=x onerror=1>")} data-color="red">'
+            '<rect width="1" height="1" data-group="g-2"/></g></svg>')
+    store.import_svg(evil, new_tab=True)
+    d = store.doc
+    assert d.layer("A").line_style == "solid" and d.layer("A").color == "#000000"
+    assert [g.id for g in d.groups] == ["g-2"]
+    # a hand-edited .kerf with a script tag, bad ids and a bad assembly
+    j = json.loads(to_native(d))
+    j["document"]["elements"].append({"id": "x\"<b>", "tag": "script", "layer": "A", "attrs": {"onload": "1"}})
+    j["document"]["elements"].append({"id": "el-1", "tag": "rect", "layer": "nope", "attrs": {"onclick": "1", "x": "2"}})
+    j["document"]["groups"][0]["assembly"] = {"matrix": "evil", "color": "red"}
+    from document import from_native
+    d2 = from_native(json.dumps(j))
+    assert all(e.tag != "script" for e in d2.elements)
+    assert all(re.fullmatch(r"el-\d+", e.id) for e in d2.elements) and len({e.id for e in d2.elements}) == len(d2.elements)
+    assert all("onclick" not in e.attrs for e in d2.elements) and d2.groups[0].assembly is None
+
+
+def test_batch_references_make_one_undo_step(store):
+    res = store.apply([{"op": "add_element", "tag": "rect", "attrs": {"width": 5, "height": 5}},
+                       {"op": "add_element", "tag": "circle", "layer": "CUT_INSIDE", "attrs": {"r": 1}},
+                       {"op": "group", "items": ["$0", "$1"], "name": "P"}])
+    assert store.doc.group_by_id(res[2]).name == "P"
+    store.undo()
+    assert not store.doc.elements and not store.doc.groups
+    with pytest.raises(DocError):
+        store.apply([{"op": "group", "items": ["$5"]}])
+
+
+def test_revert_clears_redo_and_delete_layer_prunes_entities(store):
+    eid = add_rect(store, layer="ENGRAVE")
+    store.apply([{"op": "group", "items": [eid], "name": "E"}])
+    store.save("r")
+    store.apply([{"op": "remove_layer", "name": "ENGRAVE", "move_to": "__delete__"}])
+    assert not store.doc.groups
+    store.undo()
+    store.revert()
+    assert not store.tab.redo_stack
+
+
+def test_compact_arc_flags_and_bad_paths():
+    from export import path_contours, IDENTITY
+    [c] = path_contours("M0 0a5 5 0 1010 0a5 5 0 10-10 0z", IDENTITY, None)
+    assert c.closed and len(c.pts) == 2 and all(abs(abs(p[2]) - 1) < 1e-9 for p in c.pts)
+    with pytest.raises(DocError):
+        path_contours("M0 0 L 5", IDENTITY, None)
+
+
+def test_dxf_import_mirrored_arc_and_units():
+    import ezdxf, io
+    from export import dxf_to_svg
+    doc = ezdxf.new("R2010")
+    doc.header["$INSUNITS"] = 5                    # centimetres
+    msp = doc.modelspace()
+    msp.add_arc((0, 0), 1.5, 0, 180, dxfattribs={"extrusion": (0, 0, -1)})   # mirrored OCS
+    msp.add_line((0, 0), (10, 0))
+    buf = io.StringIO(); doc.write(buf)
+    svg = dxf_to_svg(buf.getvalue().encode())
+    from document import Document
+    d = Document.from_svg(svg)
+    assert d.width == pytest.approx(10 * 10 + 20 + 15, abs=0.5)   # -1.5..10 cm → 115 mm + margins

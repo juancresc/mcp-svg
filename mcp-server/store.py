@@ -251,9 +251,11 @@ class Store:
             raise DocError("ops must be a non-empty list of objects")
         with self.lock:
             t = self.get_tab(tab_id)
-            before = t.doc.clone()
+            before = t.doc                  # never mutated: every change happens on a copy
             work = t.doc.clone()
-            results = [apply_op(work, op) for op in ops]
+            results = []
+            for op in ops:                  # "$n" in an op refers to the result of op n of this batch
+                results.append(apply_op(work, resolve_refs(op, results)))
             if any(op.get("op") not in NO_HISTORY_OPS for op in ops):
                 label = label or describe(ops)
                 key = coalesce_key(ops)
@@ -416,6 +418,8 @@ class Store:
             before = t.doc.clone()
             t.doc = from_native(self.resolve(t.file, ext="").read_text(encoding="utf-8"))
             t.undo_stack.append((before, "Revert"))
+            t.redo_stack.clear()
+            t.last_coalesce = None
             t.saved_fingerprint = fingerprint(t.doc)
             t.refresh_dirty()
             self._bump()
@@ -477,7 +481,8 @@ class Store:
     def export_svg(self, name: str | None = None) -> str:
         """Full SVG (all layers, entities as metadata) into data/exports/."""
         with self.lock:
-            path = self.resolve(f"exports/{name or self.display_name()}", ext=".svg")
+            from export import safe_name
+            path = self.resolve(f"exports/{name or safe_name(self.display_name())}", ext=".svg")
             path.parent.mkdir(parents=True, exist_ok=True)
             path.write_text(self.doc.to_svg("file"), encoding="utf-8")
             return self.rel(path)
@@ -485,7 +490,8 @@ class Store:
     def export_cnc(self, name: str | None = None, fmt: str = "svg") -> str:
         from export import cnc_dxf
         with self.lock:
-            stem = name or f"{self.display_name()}-cnc"
+            from export import safe_name
+            stem = name or f"{safe_name(self.display_name())}-cnc"
             path = self.resolve(f"exports/{stem}", ext=f".{fmt}")
             path.parent.mkdir(parents=True, exist_ok=True)
             if fmt == "dxf":
@@ -571,7 +577,7 @@ def apply_op(doc: Document, op: dict):
     if kind == "replace_svg":
         new = Document.from_svg(op["svg"])
         doc.width, doc.height, doc.layers, doc.elements = new.width, new.height, new.layers, new.elements
-        doc.groups, doc.params = new.groups, new.params
+        doc.groups, doc.params, doc.material = new.groups, new.params, new.material
         doc.background = new.background
         doc.next_id = max(doc.next_id, new.next_id)
         return len(doc.elements)
@@ -590,9 +596,25 @@ def apply_op(doc: Document, op: dict):
         doc.material = clean_material(op.get("material"), doc.material)
         return None
     if kind == "set_params":
-        doc.params = list(op["params"])
+        from document import clean_params
+        doc.params = clean_params(op["params"])
+        if len(doc.params) != len(op["params"]):
+            raise DocError("Invalid parameter: each needs a name (letters/digits/_), min < max, step > 0")
         return None
     raise DocError(f"Unknown op '{kind}'")
+
+
+def resolve_refs(op: dict, results: list):
+    def res(v):
+        if isinstance(v, str) and re.fullmatch(r"\$\d+", v):
+            i = int(v[1:])
+            if i >= len(results):
+                raise DocError(f"{v} refers to an operation that hasn't run yet")
+            return results[i]
+        if isinstance(v, list):
+            return [res(x) for x in v]
+        return v
+    return {k: res(v) if k in ("items", "id", "ids", "group", "parent") else v for k, v in op.items()}
 
 
 def describe(ops: list[dict]) -> str:

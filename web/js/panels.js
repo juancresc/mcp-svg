@@ -37,11 +37,11 @@ export function renderLayers() {
       <div class="layer-row" title="Click to draw on this layer · double-click the name to rename">
         <button class="icon-btn small ${l.visible ? '' : 'off'}" data-act="visible" title="${l.visible ? 'Hide' : 'Show'}">${l.visible ? icons.eye : icons.eyeOff}</button>
         <button class="icon-btn small ${l.locked ? '' : 'off'}" data-act="lock" title="${l.locked ? 'Unlock' : 'Lock (not selectable)'}">${l.locked ? icons.lock : icons.unlock}</button>
-        <label class="swatch" style="background:${l.color}" title="Colour"><input type="color" value="${l.color}" data-act="color"></label>
+        <label class="swatch" style="background:${esc(l.color)}" title="Colour"><input type="color" value="${esc(l.color)}" data-act="color"></label>
         <span class="layer-name" data-act="name">${esc(l.name)}</span>
         ${l.export ? '' : '<span class="no-export" title="Not included in CNC export">no cut</span>'}
         ${l.depth ? `<span class="no-export" style="color:#6d28d9;border-color:#d8c8f5;background:#f5f0ff" title="Partial-depth cut (pocket) from the top face">${l.depth} mm</span>` : ''}
-        <svg class="style-mini" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="${l.color}" stroke-width="2" stroke-dasharray="${screenDashOf(l) || 'none'}" stroke-linecap="round"/></svg>
+        <svg class="style-mini" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="${esc(l.color)}" stroke-width="2" stroke-dasharray="${esc(screenDashOf(l) || 'none')}" stroke-linecap="round"/></svg>
         <span class="layer-count">${counts[l.name] || 0}</span>
         <button class="icon-btn small" data-act="expand" title="Details: description, line style, export, order">${open ? icons.chevronDown : icons.chevron}</button>
       </div>
@@ -247,7 +247,7 @@ function renderInspectorContent() {
     }).join('');
     const hasFill = el.tag !== 'line' && el.tag !== 'text' && el.tag !== 'polyline';
     const fill = el.attrs.fill && el.attrs.fill !== 'none' ? el.attrs.fill : '';
-    inspector.innerHTML = `<h2>Selected shape <span class="tag-pill">${el.tag}</span> <span class="tag-pill">${el.id}</span></h2>
+    inspector.innerHTML = `<h2>Selected shape <span class="tag-pill">${esc(el.tag)}</span> <span class="tag-pill">${esc(el.id)}</span></h2>
       <div class="preview" style="margin-top:8px">${preview}</div>
       <div class="kv">
         <label>Layer</label>${layerSelect(el.layer)}
@@ -340,7 +340,7 @@ function renderDocumentInfo() {
     <div class="btn-row"><button class="btn" data-doc-size>Change size…</button><button class="btn" data-fit>Fit to window</button></div>
     ${active ? `<h3>Active layer: ${esc(active.name)}</h3><p class="hint">${esc(active.description) || 'No description. Open the layer details (▸) to add one.'}</p>` : ''}
     <h3>CNC export</h3>
-    <p class="hint">${counts.filter(([l]) => l.export && l.visible).map(([l, n]) => `${esc(l.name)} (${n})`).join(', ') || 'nothing'} will be exported.
+    <p class="hint">${counts.filter(([l]) => l.export).map(([l, n]) => `${esc(l.name)} (${n})`).join(', ') || 'nothing'} will be exported (hidden layers too — visibility only affects the view).
       ${counts.filter(([l]) => !l.export).length ? `Not exported: ${counts.filter(([l]) => !l.export).map(([l]) => esc(l.name)).join(', ')}.` : ''}</p>
     <h3>Material &amp; stock</h3>
     <div class="kv">
@@ -355,6 +355,18 @@ function renderDocumentInfo() {
       <label>Tool Ø</label><span class="unit" data-unit="mm"><input type="number" step="any" data-m="tool_diameter" value="${m.tool_diameter}"></span>
       <label>Notes</label><textarea data-m="notes" placeholder="Supplier, grain direction, feeds…">${esc(m.notes || '')}</textarea>
     </div>
+    <h3>3D sliders</h3>
+    <p class="hint">Parameters of this project for the 3D preview (e.g. desk height, lid opening). Parts move with one via their 3D placement.</p>
+    <div class="params-edit">${(doc.params || []).map((p, i) => `<div class="param-row" data-pi="${i}">
+        <input type="text" data-p="label" value="${esc(p.label)}" title="Label">
+        <input type="number" step="any" data-p="min" value="${p.min}" title="Min (mm)">
+        <input type="number" step="any" data-p="max" value="${p.max}" title="Max (mm)">
+        <input type="number" step="any" data-p="step" value="${p.step}" title="Step">
+        <input type="number" step="any" data-p="display_offset" value="${p.display_offset}" title="Shown value = slider + this">
+        <button class="icon-btn" data-p-del title="Remove">×</button></div>`).join('')}
+      <div class="param-head"><span>label</span><span>min</span><span>max</span><span>step</span><span>+shown</span><span></span></div>
+      <div class="btn-row"><button class="btn" data-p-add>Add slider</button></div>
+    </div>
     ${doc.background ? `<h3>Reference image</h3><div class="kv"><label>Opacity</label><input type="range" min="0" max="1" step="0.05" value="${doc.background.opacity}" data-bg-opacity></div>
       <div class="btn-row"><button class="btn danger" data-bg-remove>Remove image</button></div>` : ''}
     <h3>Tips</h3>
@@ -362,6 +374,33 @@ function renderDocumentInfo() {
   inspector.querySelector('[data-doc-size]').addEventListener('click', actions.documentSize);
   inspector.querySelector('[data-fit]').addEventListener('click', canvas.zoomFit);
   const setMat = (fields, label = 'Material') => api.ops([{ op: 'set_material', material: fields }], label);
+  const setParams = (params, label = '3D sliders') => api.ops([{ op: 'set_params', params }], label);
+  inspector.querySelectorAll('[data-pi] [data-p]').forEach(inp => inp.addEventListener('change', () => {
+    const i = +inp.closest('[data-pi]').dataset.pi, k = inp.dataset.p;
+    const params = JSON.parse(JSON.stringify(doc.params || []));
+    params[i][k] = inp.type === 'number' ? +inp.value : inp.value;
+    setParams(params);
+  }));
+  inspector.querySelectorAll('[data-p-del]').forEach(b => b.addEventListener('click', () => {
+    const i = +b.closest('[data-pi]').dataset.pi;
+    setParams((doc.params || []).filter((_, j) => j !== i), 'Remove slider');
+  }));
+  inspector.querySelector('[data-p-add]').addEventListener('click', async () => {
+    let v = null;
+    const ok = await modal({
+      title: 'New 3D slider',
+      html: `<div class="kv"><label>Name</label><input name="name" class="field" value="param${(doc.params || []).length + 1}" title="letters, digits, _">
+        <label>Label</label><input name="label" class="field" value="Opening">
+        <label>Min</label><input name="min" type="number" step="any" class="field" value="0">
+        <label>Max</label><input name="max" type="number" step="any" class="field" value="300">
+        <label>Step</label><input name="step" type="number" step="any" class="field" value="10"></div>
+        <p class="hint" style="margin-top:8px">Then pick it in an entity's 3D placement (“Moves with”) to make that part slide.</p>`,
+      buttons: [{ label: 'Cancel', value: false }, { label: 'Add', value: true, kind: 'primary' }],
+      onSubmit: (form) => { v = { name: form.name.value.trim(), label: form.label.value.trim(), min: +form.min.value,
+                                  max: +form.max.value, step: +form.step.value, display_offset: 0, unit: 'mm' }; return !!v.name; },
+    });
+    if (ok) setParams([...(doc.params || []), v], 'Add slider');
+  });
   inspector.querySelectorAll('[data-m]').forEach(inp => inp.addEventListener('change', () => {
     const k = inp.dataset.m;
     setMat({ [k]: inp.type === 'number' ? +inp.value : inp.value });
@@ -406,7 +445,7 @@ export function renderEntities() {
   const rows = [];
   const walk = (parent, depth) => {
     for (const g of groups.filter(g => (g.parent || null) === parent)) {
-      rows.push(`<div class="entity ${sel.has(g.id) ? 'selected' : ''}" data-gid="${g.id}" style="padding-left:${6 + depth * 14}px"
+      rows.push(`<div class="entity ${sel.has(g.id) ? 'selected' : ''}" data-gid="${esc(g.id)}" style="padding-left:${6 + depth * 14}px"
         title="Click: select · double-click: enter (edit inside)">
         <span class="ent-name">${esc(g.name)}</span>
         ${g.assembly ? '<span class="ent-3d" title="Placed in the 3D preview">3D</span>' : ''}

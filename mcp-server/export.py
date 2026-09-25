@@ -129,12 +129,39 @@ def svg_arc_center(x1, y1, rx, ry, phi, fa, fs, x2, y2):
 
 
 PATH_TOKEN = re.compile(r"[MmLlHhVvCcSsQqTtAaZz]|[-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?")
+NUM_RE = re.compile(r"\s*,?\s*([-+]?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)")
+FLAG_RE = re.compile(r"\s*,?\s*([01])")
+
+
+def tokenize_path(d: str) -> list[str]:
+    """SVG path tokens; arc flags are single characters, so compact forms like
+    'a5 5 0 1010 0' (flags 1,0 then x=10) parse correctly."""
+    out, i, cmd, argn = [], 0, None, 0
+    d = d or ""
+    while i < len(d):
+        c = d[i]
+        if c.isspace() or c == ",":
+            i += 1
+            continue
+        if c.isalpha():
+            if c not in "MmLlHhVvCcSsQqTtAaZz":
+                raise DocError(f"Unsupported path command '{c}'")
+            out.append(c); cmd, argn, i = c, 0, i + 1
+            continue
+        if cmd and cmd.upper() == "A" and argn % 7 in (3, 4):
+            m = FLAG_RE.match(d, i)
+        else:
+            m = NUM_RE.match(d, i)
+        if not m:
+            raise DocError(f"Invalid path data near '{d[i:i + 12]}'")
+        out.append(m.group(1)); argn += 1; i = m.end()
+    return out
 
 
 def path_contours(d: str, m, flip_h: float | None, flatten_step=1.0) -> list[Contour]:
     """Parse an SVG path into contours in output coordinates.
     m: element transform (doc coords); flip_h: document height to flip Y (DXF), or None."""
-    toks = PATH_TOKEN.findall(d or "")
+    toks = tokenize_path(d)
     i, cmd = 0, None
     x = y = sx = sy = 0.0
     last_ctrl = None
@@ -162,6 +189,8 @@ def path_contours(d: str, m, flip_h: float | None, flatten_step=1.0) -> list[Con
 
     def num():
         nonlocal i
+        if i >= len(toks) or re.fullmatch(r"[A-Za-z]", toks[i]):
+            raise DocError("Path data ends early (missing numbers)")
         v = float(toks[i]); i += 1
         return v
 
@@ -383,7 +412,8 @@ def dxf_bytes(doc: Document, elements, width: float, height: float, offset=(0.0,
 
 
 def cnc_elements(doc: Document, ids=None):
-    usable = {l.name for l in doc.layers if l.export and l.visible}
+    """Elements on layers marked for export (visibility is only a view setting)."""
+    usable = {l.name for l in doc.layers if l.export}
     return [e for e in doc.elements if e.layer in usable and (ids is None or e.id in ids)]
 
 
@@ -411,7 +441,7 @@ def part_files(doc: Document) -> list[tuple[str, bytes]]:
             continue
         x0, y0, x1, y1 = bbox(els)
         w, h = x1 - x0, y1 - y0
-        stem = f"{safe_name(g.name)}_x{g.qty}"
+        stem = f"{safe_name(g.name)}_x{g.qty}"   # safe for any file system
         while stem in used:
             stem += "-2"
         used.add(stem)
@@ -441,7 +471,8 @@ def parts_zip(doc: Document) -> bytes:
 
 # ── DXF import ──────────────────────────────────────────────────────────
 
-DXF_UNITS_MM = {0: 1.0, 1: 25.4, 2: 304.8, 4: 1.0, 5: 10.0, 6: 1000.0, 8: 0.0254, 9: 0.0254, 10: 914.4}
+DXF_UNITS_MM = {0: 1.0, 1: 25.4, 2: 304.8, 3: 1609344.0, 4: 1.0, 5: 10.0, 6: 1000.0, 7: 1000000.0,
+                8: 2.54e-5, 9: 0.0254, 10: 914.4, 11: 1e-7, 12: 1e-6, 13: 1e-3, 14: 100.0}
 
 
 def dxf_to_svg(data: bytes) -> str:
@@ -457,11 +488,25 @@ def dxf_to_svg(data: bytes) -> str:
 
     items = []   # (layer, kind, payload) in DXF coords (Y up, drawing units)
 
+    def mirrored_ocs(entity):
+        ex = entity.dxf.get("extrusion", None)
+        return ex is not None and abs(ex[2] + 1) < 1e-9
+
     def collect(entity, depth=0):
         t = entity.dxftype()
         layer = entity.dxf.get("layer", "0")
         try:
-            if t == "INSERT" and depth < 8:
+            if t in ("ARC", "CIRCLE", "LWPOLYLINE", "ELLIPSE") and mirrored_ocs(entity):
+                # Entities in a mirrored coordinate system (e.g. from mirrored blocks): let ezdxf
+                # convert them to world coordinates as a polyline
+                from ezdxf import path as ezpath
+                pts = [(v.x, v.y, 0) for v in ezpath.make_path(entity).flattening(0.02)]
+                closed = len(pts) > 2 and math.dist(pts[0][:2], pts[-1][:2]) < 1e-6
+                if closed:
+                    pts = pts[:-1]
+                if len(pts) > 1:
+                    items.append((layer, "poly", (pts, closed)))
+            elif t == "INSERT" and depth < 8:
                 for v in entity.virtual_entities():
                     collect(v, depth + 1)
             elif t == "LINE":
@@ -469,10 +514,12 @@ def dxf_to_svg(data: bytes) -> str:
                 items.append((layer, "poly", ([(s_.x, s_.y, 0), (e_.x, e_.y, 0)], False)))
             elif t == "LWPOLYLINE":
                 pts = [(x, y, b) for x, y, b in entity.get_points("xyb")]
-                items.append((layer, "poly", (pts, entity.closed)))
+                if len(pts) > 1:
+                    items.append((layer, "poly", (pts, entity.closed)))
             elif t == "POLYLINE" and not entity.is_3d_polyline and not entity.is_poly_face_mesh:
                 pts = [(v.dxf.location.x, v.dxf.location.y, v.dxf.get("bulge", 0)) for v in entity.vertices]
-                items.append((layer, "poly", (pts, entity.is_closed)))
+                if len(pts) > 1:
+                    items.append((layer, "poly", (pts, entity.is_closed)))
             elif t == "CIRCLE":
                 c = entity.dxf.center
                 items.append((layer, "circle", (c.x, c.y, entity.dxf.radius)))
@@ -509,13 +556,22 @@ def dxf_to_svg(data: bytes) -> str:
     xs, ys = [], []
     for _, kind, p in items:
         if kind == "poly":
-            for x, y, _ in p[0]:
+            pts, closed = p
+            n = len(pts)
+            for i, (x, y, b) in enumerate(pts):
                 xs.append(x); ys.append(y)
+                if b and (i < n - 1 or closed):       # include arc bulges in the bounds
+                    x2, y2, _ = pts[(i + 1) % n]
+                    for ax, ay in arc_points(x, y, x2, y2, b, 1.0):
+                        xs.append(ax); ys.append(ay)
         elif kind == "circle":
             xs += [p[0] - p[2], p[0] + p[2]]; ys += [p[1] - p[2], p[1] + p[2]]
         elif kind == "arc":
-            (x0, y0), (x1, y1), r, _ = p
+            (x0, y0), (x1, y1), r, sweep = p
             xs += [x0, x1]; ys += [y0, y1]
+            b = math.tan(sweep / 4)
+            for ax, ay in arc_points(x0, y0, x1, y1, b, 1.0):
+                xs.append(ax); ys.append(ay)
         else:
             xs.append(p[0]); ys.append(p[1])
     minx, maxy = min(xs), max(ys)

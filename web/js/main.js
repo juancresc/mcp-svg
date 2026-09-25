@@ -19,7 +19,7 @@ let firstDoc = true;
 on('tab-changed', () => {
   setSelection([]);
   setContext(null);
-  if (!app.previewTabs.has(app.server.active) && app.view === '3d') app.view = '2d';
+  app.view = app.tabViews[app.server.active] || '2d';   // each tab remembers Drawing / 3D
   emit('view-mode');
   requestAnimationFrame(canvas.zoomFit);
 });
@@ -44,7 +44,8 @@ on('selection', () => { updateToolbar(); updateStatus(); reportSelection(); });
 
 // ── Selection shared with Claude (MCP get_selection / set_selection) ──
 
-const seenSeq = {};          // tab id → last selection_seq applied
+let seenSeq = {};            // tab id → last selection_seq applied
+on('server-restarted', () => { seenSeq = {}; });
 let selTimer = null;
 function reportSelection() {
   clearTimeout(selTimer);
@@ -63,9 +64,7 @@ on('doc', () => {
   }
 });
 
-// 3D preview tabs are a view, remembered per browser
-try { JSON.parse(localStorage.getItem('kerf.previewTabs') || '[]').forEach(t => app.previewTabs.add(t)); } catch (_) {}
-on('view-mode', () => localStorage.setItem('kerf.previewTabs', JSON.stringify([...app.previewTabs])));
+
 on('context', () => { updateStatus(); refreshInspector(); renderEntities(); });
 
 // ── 2D drawing ↔ 3D preview ────────────────────────────────

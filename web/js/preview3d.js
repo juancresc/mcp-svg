@@ -4,7 +4,7 @@
 // Entities without an assembly are laid flat where they are on the sheet.
 
 import { app, on, descendants, selectItems, setContext } from './state.js';
-import { docToSvg } from './geometry.js';
+import { renderAttrs } from './geometry.js';
 import { esc, toast, download } from './ui.js';
 
 const host = document.getElementById('view3d-canvas');
@@ -70,9 +70,11 @@ function resize() {
 
 // ── Building parts from the document ───────────────────────
 
+const escA = s => String(s).replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/</g, '&lt;');
 function elementShapes(doc, el) {
-  const svg = docToSvg({ ...doc, background: null, layers: doc.layers.map(l => ({ ...l, visible: true })) },
-                       { background: false, ids: new Set([el.id]) });
+  const layer = doc.layers.find(l => l.name === el.layer) || { color: '#000', line_style: 'solid' };
+  const a = Object.entries(renderAttrs(el, layer)).map(([k, v]) => `${k}="${escA(v)}"`).join(' ');
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg"><${el.tag} ${a}/></svg>`;
   const data = new SVGLoader().parse(svg);
   const shapes = [];
   for (const p of data.paths) shapes.push(...SVGLoader.createShapes(p));
@@ -154,10 +156,28 @@ function flatAssembly() {
   return { matrix: [1, 0, 0, -1, 0, 0], position: [0, 0, 0], rotation: [-90, 0, 0] };
 }
 
+let builtKey = null;
+function contentKey(doc) {
+  // What the 3D model depends on (not selection, visibility or the view)
+  return JSON.stringify([doc.elements, doc.groups, doc.material, doc.params, doc.layers.map(l => [l.name, l.export, l.depth])]);
+}
+
+function disposeParts() {
+  partsRoot.traverse(o => {
+    o.geometry?.dispose?.();
+    if (o.material) (Array.isArray(o.material) ? o.material : [o.material]).forEach(m => m.dispose?.());
+  });
+  partsRoot.clear();
+}
+
 function buildScene() {
   const doc = app.doc;
+  const key = contentKey(doc);
+  built = app.server.version;
+  if (key === builtKey && parts.length) { highlightSelection(); return; }
+  builtKey = key;
   parts = [];
-  partsRoot.clear();
+  disposeParts();
   const groups = doc.groups || [];
   const placed = groups.filter(g => g.assembly);
   const mode = placed.length ? 'assembly' : 'flat';
@@ -250,8 +270,7 @@ function renderPanel(mode, count) {
       <input type="range" min="${p.min ?? 0}" max="${p.max ?? 100}" step="${p.step ?? 1}" value="${values[p.name]}" data-param="${esc(p.name)}"></div>`).join('')}
     ${count > 1 ? `<div class="param"><label><span>Assembly view (explode)</span><b data-val="__explode">${Math.round(explode * 100)}%</b></label>
       <input type="range" min="0" max="1" step="0.01" value="${explode}" data-explode></div>` : ''}
-    <div class="row"><button class="btn" data-fit>Reset view</button><button class="btn" data-png>PNG</button>
-      <button class="btn" data-export="glb">GLB</button><button class="btn" data-export="stl">STL</button></div>
+    <div class="row"><button class="btn" data-fit>Reset view</button></div>
     ${mode === 'flat' ? `<p class="note">No part has a 3D position yet, so everything is shown flat, as on the sheet, at the material thickness.
       To assemble: group each part (select its shapes → ⌘G), then “Place in 3D…” in the Inspector — or ask Claude to place them.</p>` : ''}
     <p class="note">Drag to orbit · right-drag to pan · scroll to zoom</p>`;
@@ -274,9 +293,7 @@ panel.addEventListener('input', (e) => {
 });
 panel.addEventListener('click', (e) => {
   if (e.target.closest('[data-fit]')) fitView();
-  if (e.target.closest('[data-png]')) renderer.domElement.toBlob(b => download(b, `${app.server.name}-3d.png`), 'image/png');
-  const ex = e.target.closest('[data-export]');
-  if (ex) exportModel(ex.dataset.export);
+
 });
 
 function fitView() {
@@ -335,6 +352,13 @@ export async function capture(width = 1600, height = 1000, explodeOverride = nul
 
 /** Export the assembled model (current slider positions): 'glb' (glTF binary, colours) or 'stl'. */
 export async function exportModel(format) {
+  if (format === 'png') {                      // the 3D view as an image
+    const data = await capture(2400, 1500);
+    if (!data) return false;
+    const b = await (await fetch(data)).blob();
+    download(b, `${app.server.name}-3d.png`);
+    return true;
+  }
   if (!await loadThree()) return false;
   if (!renderer) { try { setup(); } catch (e) { toast('3D is not available in this browser', 'error'); return false; } }
   if (built !== app.server.version) buildScene();
@@ -391,4 +415,4 @@ on('doc', () => {
   clearTimeout(rebuildTimer);
   rebuildTimer = setTimeout(() => { if (built !== app.server.version) buildScene(); }, 150);
 });
-on('tab-changed', () => { built = null; });
+on('tab-changed', () => { built = null; builtKey = null; });

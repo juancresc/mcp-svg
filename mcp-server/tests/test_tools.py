@@ -90,3 +90,39 @@ def test_errors_are_results_not_crashes(srv):
     assert "error" in j(srv.update_element("el-99", '{"x": 1}'))
     assert "error" in j(srv.transform_elements("el-99", "rotate(10)"))
     assert "error" in j(srv.add_dimension(1, 1, 1, 1))
+
+
+def test_power_tools(srv):
+    r = j(srv.apply_ops(json.dumps([
+        {"op": "add_element", "tag": "rect", "layer": "CUT_OUTSIDE", "attrs": {"x": 10, "y": 10, "width": 100, "height": 50}},
+        {"op": "add_element", "tag": "circle", "layer": "CUT_INSIDE", "attrs": {"cx": 30, "cy": 35, "r": 2}},
+        {"op": "add_element", "tag": "text", "layer": "CUT_INSIDE", "text": "oops", "attrs": {"x": 50, "y": 30}},
+        {"op": "group", "items": ["$0", "$1", "$2"], "name": "Plate"}])))
+    gid = r["results"][3]
+    desc = j(srv.describe_entity("Plate"))
+    assert desc["id"] == gid and desc["hole_diameters_mm"] == [4] and desc["bounds_mm"]["width"] == 100
+    found = j(srv.find_elements(layer="CUT_INSIDE", x=0, y=0, width=40, height=40))
+    assert [e["tag"] for e in found["elements"]] == ["circle"]
+    issues = {i["kind"] for i in j(srv.check_cnc())["issues"]}
+    assert {"hole_smaller_than_tool", "text_on_cut_layer"} <= issues
+    ids = j(srv.add_svg('<rect x="0" y="0" width="1" height="1"/>'))["ids"]
+    assert len(ids) == 1
+    srv.store.undo(); srv.store.undo()
+    assert len(j(srv.list_groups())["groups"]) == 0      # apply_ops was one undo step
+
+
+def test_http_guard(srv):
+    import asyncio
+    from aiohttp.test_utils import make_mocked_request
+    async def ok(request):
+        from aiohttp import web
+        return web.json_response({"ok": True})
+    async def run(method, host, ctype=None, origin=None):
+        headers = {"Host": host}
+        if ctype: headers["Content-Type"] = ctype
+        if origin: headers["Origin"] = origin
+        return (await srv.local_only(make_mocked_request(method, "/api/ops", headers=headers), ok)).status
+    assert asyncio.run(run("POST", "localhost:8765", "application/json")) == 200
+    assert asyncio.run(run("POST", "localhost:8765", "text/plain")) == 415
+    assert asyncio.run(run("POST", "localhost:8765", "application/json", "http://evil.example")) == 403
+    assert asyncio.run(run("GET", "evil.example:8765")) == 403

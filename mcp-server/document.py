@@ -122,6 +122,68 @@ def default_layers() -> list[Layer]:
     ]
 
 
+def _numbers(v, n):
+    if not isinstance(v, (list, tuple)) or len(v) != n:
+        raise DocError(f"expected a list of {n} numbers")
+    out = []
+    for x in v:
+        x = float(x)
+        if x != x or abs(x) > 1e7:
+            raise DocError("number out of range")
+        out.append(num(x))
+    return out
+
+
+def clean_assembly(a, strict=False):
+    """Validated 3D placement (see Group). strict: raise on bad input, else drop it."""
+    if a is None:
+        return None
+    try:
+        if not isinstance(a, dict):
+            raise DocError("assembly must be an object")
+        out = {}
+        if "matrix" in a: out["matrix"] = _numbers(a["matrix"], 6)
+        if "position" in a: out["position"] = _numbers(a["position"], 3)
+        if "rotation" in a: out["rotation"] = _numbers(a["rotation"], 3)
+        if a.get("thickness") not in (None, ""):
+            t = float(a["thickness"])
+            if not 0 < t <= 100000:
+                raise DocError("thickness must be > 0")
+            out["thickness"] = num(t)
+        if a.get("color"):
+            if not HEX_COLOR.match(str(a["color"])):
+                raise DocError("color must be #rrggbb")
+            out["color"] = a["color"]
+        if a.get("move"):
+            m = a["move"]
+            if not isinstance(m, dict) or not re.fullmatch(r"[A-Za-z_]\w{0,39}", str(m.get("param", ""))):
+                raise DocError("move must be {param, axis}")
+            out["move"] = {"param": m["param"], "axis": _numbers(m.get("axis", [0, 1, 0]), 3)}
+        return out
+    except (DocError, TypeError, ValueError) as e:
+        if strict:
+            raise DocError(f"Invalid assembly: {e}")
+        return None
+
+
+def clean_params(params) -> list[dict]:
+    """3D preview sliders: [{name, label, min, max, step, display_offset, unit}]."""
+    out = []
+    for p in params if isinstance(params, list) else []:
+        if not isinstance(p, dict) or not re.fullmatch(r"[A-Za-z_]\w{0,39}", str(p.get("name", ""))):
+            continue
+        q = {"name": p["name"], "label": str(p.get("label") or p["name"])[:60], "unit": str(p.get("unit") or "")[:10]}
+        try:
+            for k, d in (("min", 0), ("max", 100), ("step", 1), ("display_offset", 0)):
+                q[k] = num(float(p.get(k, d)))
+        except (TypeError, ValueError):
+            continue
+        if q["max"] <= q["min"] or q["step"] <= 0:
+            continue
+        out.append(q)
+    return out
+
+
 def check_depth(depth):
     if depth in (None, "", 0):
         return None
@@ -287,6 +349,7 @@ class Document:
 
     def update_group(self, gid: str, name: str | None = None, qty: int | None = None,
                      assembly=...) -> Group:
+        """assembly: ... = unchanged, None = remove, dict = validated placement."""
         g = self.group_by_id(gid)
         if name is not None:
             if not name.strip():
@@ -299,7 +362,7 @@ class Document:
         if assembly is not ...:
             if assembly is not None and not isinstance(assembly, dict):
                 raise DocError("assembly must be an object or null")
-            g.assembly = assembly
+            g.assembly = clean_assembly(assembly, strict=True)
         return g
 
     def prune_groups(self):
@@ -365,6 +428,7 @@ class Document:
                                f"to keep them, or delete them first")
             if move_to == "__delete__":
                 self.elements = [e for e in self.elements if e.layer != name]
+                self.prune_groups()
             else:
                 self.layer(move_to)
                 for e in members:
@@ -398,14 +462,88 @@ class Document:
 
     @classmethod
     def from_json(cls, d: dict) -> "Document":
+        """Load and validate (files and sessions are untrusted: everything is checked)."""
+        layer_keys = set(Layer.__dataclass_fields__)
+        el_keys, group_keys = set(Element.__dataclass_fields__), set(Group.__dataclass_fields__)
         doc = cls(width=d["width"], height=d["height"],
-                  layers=[Layer(**l) for l in d["layers"]],
-                  elements=[Element(**e) for e in d["elements"]],
+                  layers=[Layer(**{k: v for k, v in l.items() if k in layer_keys}) for l in d["layers"]],
+                  elements=[Element(**{k: v for k, v in e.items() if k in el_keys}) for e in d["elements"]],
                   background=d.get("background"), next_id=d.get("next_id", 1),
-                  groups=[Group(**g) for g in d.get("groups", [])], params=d.get("params", []),
-                  material=clean_material(d.get("material")))
+                  groups=[Group(**{k: v for k, v in g.items() if k in group_keys}) for g in d.get("groups", [])],
+                  params=d.get("params", []), material=clean_material(d.get("material")))
+        doc.sanitize()
         doc._fix_next_id()
         return doc
+
+    def sanitize(self):
+        """Make a loaded document safe and consistent: valid layer fields, ids, tags,
+        attributes, entities, placements and parameters. Invalid bits are dropped or reset."""
+        self.set_size(self.width, self.height)
+        seen = set()
+        layers = []
+        for l in self.layers:
+            name = sanitize_layer_name(str(l.name))
+            if name in seen:
+                continue
+            seen.add(name)
+            l.name = name
+            l.color = l.color if HEX_COLOR.match(str(l.color)) else "#000000"
+            try:
+                validate_layer_fields(line_style=str(l.line_style))
+            except DocError:
+                l.line_style = "solid"
+            l.visible, l.locked, l.export = bool(l.visible), bool(l.locked), bool(l.export)
+            l.description = str(l.description or "")[:500]
+            try:
+                l.depth = check_depth(l.depth)
+            except DocError:
+                l.depth = None
+            layers.append(l)
+        self.layers = layers or default_layers()
+        names = {l.name for l in self.layers}
+        gids = {g.id for g in self.groups if isinstance(g.id, str) and re.fullmatch(r"g-\d+", g.id)}
+        groups = []
+        for g in self.groups:
+            if g.id not in gids or any(x.id == g.id for x in groups):
+                continue
+            g.name = str(g.name or "Entity")[:80]
+            g.parent = g.parent if g.parent in gids and g.parent != g.id else None
+            try:
+                g.qty = max(1, int(g.qty or 1))
+            except (TypeError, ValueError):
+                g.qty = 1
+            g.assembly = clean_assembly(g.assembly)
+            groups.append(g)
+        self.groups = groups
+        for g in self.groups:              # break parent cycles
+            chain, cur = set(), g
+            while cur and cur.parent:
+                if cur.id in chain:
+                    g.parent = None
+                    break
+                chain.add(cur.id)
+                cur = next((x for x in self.groups if x.id == cur.parent), None)
+        elements, ids = [], set()
+        for e in self.elements:
+            if e.tag not in SHAPE_TAGS:
+                continue
+            if not (isinstance(e.id, str) and re.fullmatch(r"el-\d+", e.id)) or e.id in ids:
+                e.id = ""
+            ids.add(e.id)
+            e.layer = e.layer if e.layer in names else self.layers[0].name
+            e.attrs = clean_attrs(e.attrs if isinstance(e.attrs, dict) else {})
+            e.text = str(e.text or "")
+            e.group = e.group if e.group in gids else None
+            elements.append(e)
+        self.elements = elements
+        self._fix_next_id()
+        for e in self.elements:
+            if not e.id:
+                e.id = self.new_id()
+        self.params = clean_params(self.params)
+        if self.background and not (isinstance(self.background, dict)
+                                    and str(self.background.get("href", "")).startswith("data:image/")):
+            self.background = None
 
     def clone(self) -> "Document":
         return copy.deepcopy(self)
@@ -435,7 +573,7 @@ class Document:
                        f'preserveAspectRatio="xMidYMid meet" opacity="{self.background.get("opacity", 0.3)}" '
                        f'href={quoteattr(self.background["href"])}/>')
         for i, layer in enumerate(self.layers):
-            if mode == "cnc" and not (layer.export and layer.visible):
+            if mode == "cnc" and not layer.export:        # visibility is a view setting, not an export filter
                 continue
             members = [e for e in self.elements if e.layer == layer.name]
             if mode == "cnc" and not members:
@@ -481,7 +619,12 @@ class Document:
             layer = copy.copy(defaults.get(name, Layer(name, "#000000")))
             if g is not None:
                 if HEX_COLOR.match(g.get("data-color") or ""): layer.color = g.get("data-color")
-                if g.get("data-line-style"): layer.line_style = g.get("data-line-style")
+                if g.get("data-line-style"):
+                    try:
+                        validate_layer_fields(line_style=g.get("data-line-style"))
+                        layer.line_style = g.get("data-line-style")
+                    except DocError:
+                        pass
                 if g.get("data-export"): layer.export = g.get("data-export") == "true"
                 if g.get("data-locked"): layer.locked = g.get("data-locked") == "true"
                 if g.get("data-description") is not None: layer.description = g.get("data-description")
@@ -493,6 +636,7 @@ class Document:
 
         fallback = default_layer or (doc.layers[0].name if doc.layers else "CUT_OUTSIDE")
         found_real_layers = False
+        used_ids = {e.id for e in doc.elements}
 
         # Groups ("entities") and 3D parameters from our metadata; ids are remapped on import
         group_map: dict[str, str] = {}
@@ -503,15 +647,16 @@ class Document:
                 data = json.loads(meta.get("data-kerf") or meta.get("data-svgcnc"))
                 incoming = [Group(**{k: g.get(k) for k in ("id", "name", "parent", "qty", "assembly") if k in g})
                             for g in data.get("groups", [])]
+                incoming = [g for g in incoming if isinstance(g.id, str) and re.fullmatch(r"g-\d+", g.id)]
                 for g in incoming:
                     group_map[g.id] = doc.new_group_id() if base else g.id
                     doc.groups.append(Group(group_map[g.id], str(g.name or "Entity")[:80], None,
-                                            max(1, int(g.qty or 1)), g.assembly if isinstance(g.assembly, dict) else None))
+                                            max(1, int(g.qty or 1)), clean_assembly(g.assembly)))
                 for g in incoming:
                     if g.parent in group_map:
                         doc.group_by_id(group_map[g.id]).parent = group_map[g.parent]
                 if not base and isinstance(data.get("params"), list):
-                    doc.params = data["params"]
+                    doc.params = clean_params(data["params"])
                 if not base and isinstance(data.get("material"), dict):
                     doc.material = clean_material(data["material"])
             except (ValueError, TypeError) as e:
@@ -548,8 +693,9 @@ class Document:
                 if transform:
                     attrs["transform"] = " ".join(x for x in (transform, attrs.get("transform")) if x)
                 eid = attrs.get("id", "")
-                if not re.fullmatch(r"el-\d+", eid) or any(e.id == eid for e in doc.elements):
+                if not re.fullmatch(r"el-\d+", eid) or eid in used_ids:
                     eid = ""
+                used_ids.add(eid)
                 gid = group_map.get(child.get("data-group") or "")
                 lines = text_lines(child) if tag == "text" else None
                 if lines:  # multi-line text (positioned <tspan>s): one text element per line

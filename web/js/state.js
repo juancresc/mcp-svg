@@ -42,8 +42,19 @@ export function layerOf(el) {
   return app.doc?.layers.find(l => l.name === el.layer);
 }
 
+// Lookup indexes, rebuilt lazily once per document version
+let index = { key: null, els: new Map(), groups: new Map(), desc: new Map() };
+function idx() {
+  const key = app.server ? `${app.server.active}:${app.server.version}` : null;
+  if (index.key !== key) {
+    index = { key, els: new Map((app.doc?.elements || []).map(e => [e.id, e])),
+              groups: new Map((app.doc?.groups || []).map(g => [g.id, g])), desc: new Map() };
+  }
+  return index;
+}
+
 export function elementById(id) {
-  return app.doc?.elements.find(e => e.id === id);
+  return idx().els.get(id);
 }
 
 export function selectedElements() {
@@ -70,7 +81,7 @@ app.view = '2d';               // '2d' drawing or '3d' preview of the active doc
 app.showDims = pref('showDims', true);
 
 export function groupById(id) {
-  return app.doc?.groups?.find(g => g.id === id);
+  return idx().groups.get(id);
 }
 
 export function parentOf(item) {
@@ -78,6 +89,14 @@ export function parentOf(item) {
 }
 
 export function descendants(gid) {
+  const cache = idx().desc;
+  if (cache.has(gid)) return cache.get(gid);
+  const out = descendantsUncached(gid);
+  cache.set(gid, out);
+  return out;
+}
+
+function descendantsUncached(gid) {
   const groups = app.doc?.groups || [];
   const kids = new Set([gid]);
   let grew = true;
@@ -126,4 +145,9 @@ export function setContext(gid) {
   emit('context');
 }
 
-app.previewTabs = new Set();   // document tab ids that have a 3D preview tab open
+// Per document tab: which view is showing ('2d' drawing or '3d' preview); remembered per browser
+app.tabViews = pref('tabViews', {});
+export function setTabView(tabId, view) {
+  app.tabViews[tabId] = view;
+  savePref('tabViews', app.tabViews);
+}

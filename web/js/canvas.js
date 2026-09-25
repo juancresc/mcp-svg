@@ -279,7 +279,13 @@ export function toggleUnit() {
   drawRulers();
 }
 
+let rulerFrame = 0;
 export function drawRulers() {
+  if (rulerFrame) return;               // at most once per animation frame
+  rulerFrame = requestAnimationFrame(() => { rulerFrame = 0; drawRulersNow(); });
+}
+
+function drawRulersNow() {
   if (!app.doc) return;
   const svgRect = svg.getBoundingClientRect(), wrapRect = wrap.getBoundingClientRect();
   const pxPerUnit = (app.unit === 'cm' ? 10 : 25.4) * app.zoom;
@@ -477,10 +483,16 @@ wrap.addEventListener('dblclick', (e) => {
 });
 
 // Hover highlight follows the same closest-shape rule as clicking
-let hovered = null;
+let hovered = null, hoverFrame = 0, hoverEvt = null;
 svg.addEventListener('pointermove', (e) => {
   if (gesture || app.tool !== 'select') return setHover(null);
-  setHover(e.target.parentNode === gHits ? pickAt(e.clientX, e.clientY) : null);
+  hoverEvt = e;
+  if (hoverFrame) return;               // closest-shape picking at most once per frame
+  hoverFrame = requestAnimationFrame(() => {
+    hoverFrame = 0;
+    const ev = hoverEvt;
+    setHover(ev.target.parentNode === gHits ? pickAt(ev.clientX, ev.clientY) : null);
+  });
 });
 svg.addEventListener('pointerleave', () => setHover(null));
 function setHover(id) {

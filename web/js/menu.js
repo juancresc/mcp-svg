@@ -32,6 +32,7 @@ const MENUS = [
     ['DXF as new document…', () => actions.importDxf(false)],
     ['DXF into this document…', () => actions.importDxf(true)],
     '-',
+    ['Material & stock…', actions.materialDialog],
     ['Document size…', actions.documentSize],
     '-',
     ['Close tab', () => actions.closeTab(), mac ? '⌥W' : 'Alt+W'],
@@ -58,7 +59,7 @@ const MENUS = [
     ['Clear all…', actions.clearAll],
   ]],
   ['View', [
-    ['3D preview', () => actions.open3d(), '3'],
+    [() => app.view === '3d' ? 'Drawing (2D)' : '3D preview', () => actions.toggle3d(), '3'],
     '-',
     ['Zoom in', canvas.zoomIn, '+'],
     ['Zoom out', canvas.zoomOut, '−'],
@@ -92,7 +93,7 @@ const MENUS = [
     '-',
     ['# Other'],
     ['SVG — all layers (Inkscape, Illustrator…)', actions.downloadSvg],
-    ['PNG image', actions.exportPng],
+    [() => app.view === '3d' ? 'PNG image (3D view)' : 'PNG image (drawing)', () => app.view === '3d' ? actions.export3d('png') : actions.exportPng()],
   ]],
 ];
 
@@ -144,7 +145,7 @@ menubar.addEventListener('mouseover', (e) => {
   if (openMenu && menu && menu !== openMenu) setOpen(menu);
 });
 document.addEventListener('pointerdown', (e) => {
-  if (openMenu && !menubar.contains(e.target) && !e.target.closest('#tb-export')) setOpen(null);
+  if (openMenu && !menubar.contains(e.target)) setOpen(null);
 });
 
 // ── Toolbar ────────────────────────────────────────────────
@@ -170,9 +171,9 @@ toolbar.innerHTML = [
   `<select class="tb-select" id="tb-grid-size" title="Grid / snap size">${[0.5, 1, 2, 5, 10, 25, 50, 100].map(g => `<option value="${g}">${g} mm</option>`).join('')}</select>`,
   tb('dims', icons.dims, 'Show selection dimensions (D)'),
   '<span class="tb-spacer"></span>',
+  '<button class="tb-btn tb-material" id="tb-material" title="Material & stock (click to change)"><span class="mat-dot"></span><span id="tb-material-label">Material</span></button>',
   tb('3d', icons.cube, '3D preview (3)', '3D'),
   tb('code', icons.code, `SVG code (${MOD}/)`),
-  tb('export', icons.export, 'Export: CNC SVG / DXF, parts for nesting, PNG…', 'Export ▾'),
   tb('side', icons.side, `Side panel (${MOD}\\)`),
 ].join('');
 
@@ -195,10 +196,10 @@ click('fit', canvas.zoomFit);
 click('grid', () => canvas.setGrid({ showGrid: !app.showGrid }));
 click('snap', () => canvas.setGrid({ snap: !app.snap }));
 click('dims', () => canvas.setShowDims(!app.showDims));
-click('3d', () => actions.open3d());
+click('3d', () => actions.toggle3d());
 click('code', toggleCode);
-click('export', () => openMenuByName('Export'));
 click('side', toggleSide);
+click('material', actions.materialDialog);
 document.getElementById('tb-grid-size').addEventListener('change', (e) => canvas.setGrid({ grid: +e.target.value }));
 
 export function updateToolbar() {
@@ -218,6 +219,11 @@ export function updateToolbar() {
   document.getElementById('tb-3d').classList.toggle('on', app.view === '3d');
   document.getElementById('tb-side').classList.toggle('on', !app.sideHidden);
   document.getElementById('tb-grid-size').value = String(app.grid);
+  const m = app.doc?.material;
+  if (m) {
+    document.getElementById('tb-material-label').textContent = `${m.name} · ${m.thickness} mm`;
+    document.querySelector('#tb-material .mat-dot').style.background = m.color || '#e3c592';
+  }
 }
 
 // ── Tool palette ───────────────────────────────────────────
@@ -288,7 +294,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === '0') return canvas.zoomFit();
   if (e.key === '1') return canvas.zoom100();
   if (e.key === '2') return canvas.zoomToSelection();
-  if (e.key === '3') return actions.open3d();
+  if (e.key === '3') return actions.toggle3d();
   if (e.key === '#') return canvas.setGrid({ showGrid: !app.showGrid });
   if (e.key === '%') return canvas.setGrid({ snap: !app.snap });
   if (k === 'd') return canvas.setShowDims(!app.showDims);

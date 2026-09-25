@@ -57,7 +57,8 @@ data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (
 
 ### Model rules
 - **Stroke colour and line style belong to the layer** (CNC colour convention). Element attrs never carry `stroke`, `stroke-dasharray`, `data-layer`, `data-group`, `style` or `id`. Attribute names are validated (no namespaces, no `on*`).
-- A layer with a **`depth`** is a partial-depth cut from the top face (a pocket). Without one it's a through-cut. `export` decides what goes into CNC exports (NOTES and HARDWARE don't).
+- A layer with a **`depth`** is a partial-depth cut from the top face (a pocket). Without one it's a through-cut. **Only `export` decides what goes into CNC exports** (NOTES and HARDWARE don't); visibility is just a view setting.
+- **Everything loaded is validated** (`Document.sanitize`, used by `.kerf`, sessions and SVG import): layer names/colours/line styles/depths, element ids/tags/attributes, entity ids/parents/assemblies (`clean_assembly`), parameters (`clean_params`). Keep new fields going through it — file data reaches the UI.
 - **Entities** (groups) may span layers, so a part is its outline plus its holes. They nest through `parent`; the UI enters them with double-click, and Esc goes up. `qty` is used for part exports.
 - **`assembly`** (per entity) places the part in 3D:
   - `matrix [a,b,c,d,e,f]` maps doc 2D → part-local 2D (y up).
@@ -69,7 +70,7 @@ data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (
 - `material` holds name, type, thickness, colour, sheet size, tool Ø and notes. It supplies the default thickness and colour in 3D.
 
 ### Store / sync
-- All edits go through `Store.apply(ops)` on the active tab (or a given tab). Ops:
+- All edits go through `Store.apply(ops)`: the browser always names its tab, and MCP tools use the active tab. Within a batch, `"$n"` in items/id/ids/group/parent refers to the result of op n, so a whole part (shapes + group) is one undo step. Ops:
   - elements: `add_element, update_element, remove_elements, reorder_element`;
   - layers: `add_layer, update_layer, set_layer_visibility, remove_layer, move_layer`;
   - document: `set_size, set_background(_opacity), clear, replace_svg, import_svg, set_material, set_params`;
@@ -80,7 +81,9 @@ data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (
 - `selection` per tab: the browser reports it (`POST /api/selection`). Claude sets it through MCP (`selection_seq`), and the browser then highlights and zooms to it.
 - Files are resolved inside `data/` only.
 
-### HTTP API (port 8765)
+### HTTP API (port 8765, this machine only)
+The compose file publishes both ports on 127.0.0.1 only. The `local_only` middleware rejects other Host headers (DNS rebinding), foreign Origins and non-JSON POSTs (cross-site forms). The MCP SSE server has FastMCP DNS-rebinding protection turned on.
+
 - **State:** `GET /api/state[?since=V&instance=I]` (long-poll).
 - **Editing:** `POST /api/ops {ops,label}` · `POST /api/undo|redo`.
 - **Files and tabs:** `POST /api/file/new|open|close|activate|revert|save|saved-local|mkdir|delete|import` (import takes `svg | dxf (base64) | project`) · `GET /api/files` · `GET /api/browse?folder=`.
@@ -97,13 +100,15 @@ The server also sends workflow instructions to the client (`INSTRUCTIONS` in ser
 - **Layers:** `list_layers, add_layer, update_layer, remove_layer, move_layer` (with `depth` for pockets)
 - **Measure/selection:** `measure, add_dimension, get_selection, set_selection`
 - **Import/export:** `import_dxf, export_cnc` (svg|dxf), `export_svg, export_parts`
-- **Preview:** `take_screenshot(view="2d"|"3d")` (needs the editor open in a browser), `set_background_image, remove_background_image`
+- **Power tools:** `apply_ops` (any ops, one call, one undo step, `$n` references), `find_elements` (by layer/tag/entity/area), `describe_entity` (bounds, hole sizes, layers), `check_cnc` (open contours, holes smaller than the tool, duplicates, text on cut layers, parts bigger than the sheet, …)
+- **Preview:** `take_screenshot(view="2d"|"3d"|"3d-exploded")` (async; needs the editor open in a browser), `set_background_image, remove_background_image`
+- **Prompts:** `design_part(description)`, `prepare_for_cutting`
 
 ### Working with MCP
 1. `get_document_info` / `list_tabs`. Never discard the user's unsaved work or close their tabs without asking.
 2. Use layers, not colours: outlines → CUT_OUTSIDE, holes/slots → CUT_INSIDE, pockets → a layer with `depth`, labels/dimensions → NOTES, bought parts → a non-export layer.
-3. Draw parts with `add_svg` (`<path>`, `fill="none"`). Group each part (`group_elements`), set `qty` and an `assembly` so part exports and the 3D preview work.
-4. Check with `take_screenshot` (2d and 3d). `save_document` writes the .kerf. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
+3. Build each part with one `apply_ops` batch (shapes + `group` via `$n`, `fill="none"`), then `update_group` for `qty` and `assembly`, so part exports and the 3D preview work.
+4. `check_cnc`, then `take_screenshot` (2d and 3d). `save_document` writes the .kerf. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
 
 ## SVG/DXF for CNC guidelines
 - 1 unit = 1 mm; exports carry mm units. Don't scale in CAM.

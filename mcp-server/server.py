@@ -45,7 +45,15 @@ INSTRUCTIONS = """Kerf — a CNC design editor shared with the user (they see ev
 - get_selection tells you what the user selected ("this part"); set_selection highlights for them.
 - Check your work with take_screenshot (view "2d" or "3d"). Prefer add_svg for many shapes (one undo).
 - Never discard the user's unsaved work or close their tabs without asking."""
-mcp = FastMCP("kerf", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS)
+try:
+    from mcp.server.transport_security import TransportSecuritySettings
+    _security = TransportSecuritySettings(
+        enable_dns_rebinding_protection=True,
+        allowed_hosts=[f"localhost:{MCP_PORT}", f"127.0.0.1:{MCP_PORT}", "localhost", "127.0.0.1"],
+        allowed_origins=[f"http://localhost:{MCP_PORT}", f"http://127.0.0.1:{MCP_PORT}"])
+    mcp = FastMCP("kerf", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS, transport_security=_security)
+except ImportError:  # older mcp without transport security settings
+    mcp = FastMCP("kerf", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS)
 
 
 def tool(fn):
@@ -296,8 +304,10 @@ def add_svg(markup: str, layer: str = "") -> str:
     """
     if layer:
         store.doc.layer(layer)
+    before = {e.id for e in store.doc.elements}
     added = store.import_svg(markup, layer or None)
-    return json.dumps({"added": added, "elements": len(store.doc.elements)})
+    new_ids = [e.id for e in store.doc.elements if e.id not in before]
+    return json.dumps({"added": added, "ids": new_ids, "version": store.version})
 
 
 @tool
@@ -335,8 +345,10 @@ def set_element_layer(element_id: str, layer_name: str) -> str:
 
 @tool
 def get_svg() -> str:
-    """The document as SVG, in the same format as saved files (mm units, Inkscape layers)."""
-    return store.doc.to_svg("file")
+    """The document as layered SVG (mm units). The reference image, if any, is left out."""
+    d = store.doc.clone()
+    d.background = None
+    return d.to_svg("file")
 
 
 # ── MCP: entities (groups) ─────────────────────────────────
@@ -388,7 +400,8 @@ def update_group(group_id: str, name: str = "", qty: int = 0, assembly: str = ""
     if assembly:
         op["assembly"] = parse_json(assembly, "assembly")
     store.apply([op])
-    return list_groups()
+    g = store.doc.group_by_id(group_id)
+    return json.dumps({**g.__dict__, "version": store.version})
 
 
 @tool
@@ -446,8 +459,35 @@ def _box(b):
 
 @tool
 def move_elements(items: str, dx: float, dy: float) -> str:
-    """Move elements/entities by (dx, dy) mm, as one undo step. Comma-separated ids."""
-    return _transform(items, f"translate({dx}, {dy})", "Move")
+    """Move elements/entities by (dx, dy) mm, as one undo step. Comma-separated ids.
+    Coordinates are updated directly (no transforms pile up)."""
+    d = store.doc
+    ids = []
+    for i in ids_arg(items):
+        ids += d.descendants(i) if i.startswith("g-") else [d.element(i).id]
+    store.apply([{"op": "update_element", "id": i, "attrs": move_attrs(d.element(i), dx, dy)} for i in ids], label="Move")
+    return json.dumps({"moved": len(ids), "version": store.version})
+
+
+def move_attrs(e, dx, dy) -> dict:
+    """Attribute patch moving an element by (dx, dy) — same rules as the editor (geometry.js)."""
+    a = e.attrs
+    n = lambda k: float(a.get(k, 0) or 0)
+    r = lambda v: round(v, 4)
+    if a.get("transform") or e.tag in ("path", "polygon", "polyline"):
+        import re as _re
+        t = a.get("transform", "")
+        m = _re.match(r"\s*translate\(\s*([-\d.e]+)(?:[\s,]+([-\d.e]+))?\s*\)\s*", t)
+        if m:
+            x, y = r(float(m.group(1)) + dx), r(float(m.group(2) or 0) + dy)
+            rest = t[m.end():].strip()
+            return {"transform": " ".join(p for p in (f"translate({x}, {y})" if (x or y) else "", rest) if p)}
+        return {"transform": " ".join(p for p in (f"translate({r(dx)}, {r(dy)})", t.strip()) if p)}
+    if e.tag == "line":
+        return {"x1": r(n("x1") + dx), "y1": r(n("y1") + dy), "x2": r(n("x2") + dx), "y2": r(n("y2") + dy)}
+    if e.tag in ("rect", "text"):
+        return {"x": r(n("x") + dx), "y": r(n("y") + dy)}
+    return {"cx": r(n("cx") + dx), "cy": r(n("cy") + dy)}
 
 
 @tool
@@ -484,13 +524,13 @@ def duplicate(items: str, dx: float = 10, dy: float = 10, name: str = "") -> str
             t = " ".join(x for x in (f"translate({dx}, {dy})", e.attrs.get("transform")) if x)
             idx.append(len(ops))
             ops.append({"op": "add_element", "tag": e.tag, "layer": e.layer, "text": e.text,
-                        "attrs": {**e.attrs, "transform": t}})
+                        "attrs": {**e.attrs, **move_attrs(e, dx, dy)}})
         plan.append((i, idx))
-    new = store.apply(ops, label="Duplicate")
-    gops = [{"op": "group", "items": [new[k] for k in idx], "name": name or f"{d.group_by_id(i).name} copy"}
+    n_el = len(ops)
+    ops += [{"op": "group", "items": [f"${k}" for k in idx], "name": name or f"{d.group_by_id(i).name} copy"}
             for i, idx in plan if i.startswith("g-") and idx]
-    groups = store.apply(gops, label="Duplicate") if gops else []
-    return json.dumps({"elements": new, "entities": groups})
+    res = store.apply(ops, label="Duplicate")            # one undo step
+    return json.dumps({"elements": res[:n_el], "entities": res[n_el:]})
 
 
 @tool
@@ -532,9 +572,9 @@ def add_dimension(x1: float, y1: float, x2: float, y2: float, offset: float = 0,
                 "attrs": {"x": r(mx - nx * size * 0.6), "y": r(my - ny * size * 0.6), "font-size": r(size),
                           "font-family": "sans-serif", "text-anchor": "middle",
                           **({"transform": f"rotate({r(ang)} {r(mx)} {r(my)})"} if abs(ang) > 1e-6 else {})}})
-    ids = store.apply(ops, label="Add dimension")
-    [g] = store.apply([{"op": "group", "items": ids, "name": f"Dimension {round(L, 2):g}"}])
-    return json.dumps({"entity": g, "length": round(L, 3)})
+    ops.append({"op": "group", "items": [f"${k}" for k in range(len(ops))], "name": f"Dimension {round(L, 2):g}"})
+    res = store.apply(ops, label="Add dimension")        # one undo step
+    return json.dumps({"entity": res[-1], "length": round(L, 3)})
 
 
 @tool
@@ -566,6 +606,147 @@ def list_files(folder: str = "") -> str:
         if p.is_file() and not any(x.startswith(".") for x in rel.parts):
             out.append({"file": rel.as_posix(), "size": p.stat().st_size})
     return json.dumps({"files": out[:500], "truncated": len(out) > 500})
+
+
+# ── MCP: power tools ───────────────────────────────────────
+
+@tool
+def apply_ops(ops: str, label: str = "") -> str:
+    """Run several editor operations atomically as ONE undo step (all or nothing). "$n" in
+    items/id/ids/group/parent refers to the result of operation n of this batch.
+    Ops: add_element{tag,attrs,text,layer,group} · update_element{id,attrs,text,layer} ·
+    remove_elements{ids} · reorder_element{id,where} · group{items,name,parent} · ungroup{id} ·
+    update_group{id,name,qty,assembly} · add_layer{name,color,line_style,export,description,depth} ·
+    update_layer{name,...} · remove_layer{name,move_to} · set_size{width,height} ·
+    set_material{material} · set_params{params} · import_svg{svg,layer} · clear.
+    Example — a plate with a hole, grouped, in one step:
+    [{"op":"add_element","tag":"rect","layer":"CUT_OUTSIDE","attrs":{"x":0,"y":0,"width":100,"height":50}},
+     {"op":"add_element","tag":"circle","layer":"CUT_INSIDE","attrs":{"cx":20,"cy":25,"r":4}},
+     {"op":"group","items":["$0","$1"],"name":"Plate"}]"""
+    results = store.apply(parse_json(ops, "ops"), label or None)
+    return json.dumps({"results": results, "version": store.version})
+
+
+@tool
+def find_elements(layer: str = "", tag: str = "", entity: str = "", x: float | None = None, y: float | None = None,
+                  width: float | None = None, height: float | None = None, limit: int = 200) -> str:
+    """Find elements by layer, tag, entity (id or name, any depth) and/or an area (x, y, width,
+    height in mm: elements whose bounds touch it). Returns ids with bounds — much smaller than
+    list_elements."""
+    d = store.doc
+    ids = None
+    if entity:
+        g = next((g for g in d.groups if g.id == entity or g.name == entity), None)
+        if not g:
+            raise DocError(f"Entity '{entity}' not found")
+        ids = set(d.descendants(g.id))
+    area = (x, y, x + width, y + height) if None not in (x, y, width, height) else None
+    out = []
+    for e in d.elements:
+        if (layer and e.layer != layer) or (tag and e.tag != tag) or (ids is not None and e.id not in ids):
+            continue
+        b = bbox([e])
+        if area and (not b or b[2] < area[0] or b[0] > area[2] or b[3] < area[1] or b[1] > area[3]):
+            continue
+        out.append({"id": e.id, "tag": e.tag, "layer": e.layer, "entity": e.group, **(_box(b) if b else {})})
+        if len(out) >= limit:
+            break
+    return json.dumps({"count": len(out), "elements": out})
+
+
+@tool
+def describe_entity(entity: str) -> str:
+    """One part in brief: bounds, layers, outline/hole/pocket counts, hole diameters, quantity,
+    3D placement, sub-entities. entity = id ("g-3") or name."""
+    d = store.doc
+    g = next((g for g in d.groups if g.id == entity or g.name == entity), None)
+    if not g:
+        raise DocError(f"Entity '{entity}' not found")
+    els = [d.element(i) for i in d.descendants(g.id)]
+    by_layer = {}
+    for e in els:
+        by_layer[e.layer] = by_layer.get(e.layer, 0) + 1
+    from export import element_shapes
+    holes = sorted({round(2 * s[3], 2) for e in els if d.layer(e.layer).export
+                    for s in element_shapes(e, None) if s[0] == "circle"})
+    return json.dumps({"id": g.id, "name": g.name, "qty": g.qty, "parent": g.parent,
+                       "children": [c.id for c in d.groups if c.parent == g.id],
+                       "bounds_mm": _box(bbox(els)) if els else None, "shapes_per_layer": by_layer,
+                       "hole_diameters_mm": holes, "assembly": g.assembly})
+
+
+@tool
+def check_cnc() -> str:
+    """Pre-cut checks on the active document. Reports issues with element ids (pass them to
+    set_selection to show the user): open contours on cut layers, holes smaller than the tool,
+    duplicate shapes (cut twice), text on cut layers, shapes outside the document, cut shapes not
+    in any entity, entities without an outline, and parts that don't fit the material sheet."""
+    from export import element_shapes
+    d = store.doc
+    tool_d = float(d.material.get("tool_diameter") or 6)
+    issues = []
+    add = lambda kind, ids, msg: issues.append({"kind": kind, "ids": ids, "message": msg})
+    cut = {l.name for l in d.layers if l.export}
+    seen = {}
+    for e in d.elements:
+        if e.layer not in cut:
+            continue
+        if e.tag == "text":
+            add("text_on_cut_layer", [e.id], f"Text on {e.layer}: convert it to paths or move it to NOTES")
+            continue
+        try:
+            shapes = element_shapes(e, None)
+        except DocError as err:
+            add("invalid_geometry", [e.id], str(err)); continue
+        for s_ in shapes:
+            if s_[0] == "contour" and not s_[1].closed and d.layer(e.layer).depth is None:
+                add("open_contour", [e.id], f"Open shape on {e.layer}: through-cuts need closed outlines")
+            if s_[0] == "circle" and 2 * s_[3] < tool_d:
+                add("hole_smaller_than_tool", [e.id], f"Ø{2 * s_[3]:g} hole is smaller than the {tool_d:g} mm tool")
+        key = (e.tag, e.layer, json.dumps(e.attrs, sort_keys=True))
+        if key in seen:
+            add("duplicate", [seen[key], e.id], "Identical shapes on the same layer (would be cut twice)")
+        else:
+            seen[key] = e.id
+        b = bbox([e])
+        if b and (b[0] < -0.01 or b[1] < -0.01 or b[2] > d.width + 0.01 or b[3] > d.height + 0.01):
+            add("outside_document", [e.id], "Shape extends outside the document")
+        if d.groups and not e.group:
+            add("not_in_entity", [e.id], "Cut shape not in any entity (it won't be in part exports)")
+    sw, sh = float(d.material.get("sheet_width") or 0), float(d.material.get("sheet_height") or 0)
+    for g in (g for g in d.groups if not g.parent):
+        els = [d.element(i) for i in d.descendants(g.id)]
+        cut_els = [e for e in els if e.layer in cut]
+        if els and cut_els and not any(e.layer == "CUT_OUTSIDE" for e in cut_els) and d.has_layer("CUT_OUTSIDE"):
+            add("no_outline", [g.id], f"Entity '{g.name}' has no CUT_OUTSIDE outline")
+        b = bbox(cut_els) if cut_els else None
+        if b and sw and sh:
+            w, h = b[2] - b[0], b[3] - b[1]
+            if not ((w <= sw and h <= sh) or (w <= sh and h <= sw)):
+                add("bigger_than_sheet", [g.id], f"Entity '{g.name}' ({w:.0f} × {h:.0f}) doesn't fit a {sw:g} × {sh:g} sheet")
+    return json.dumps({"ok": not issues, "issues": issues[:200], "count": len(issues),
+                       "tool_diameter": tool_d})
+
+
+@mcp.prompt()
+def design_part(description: str) -> str:
+    """Design a CNC part in Kerf from a description."""
+    return (f"Design this part in the Kerf editor: {description}\n"
+            "1. get_document_info; set_material if the material/thickness is known.\n"
+            "2. Draw with apply_ops (outline on CUT_OUTSIDE, holes/slots on CUT_INSIDE, pockets on a layer with depth), "
+            "grouping the part in the same batch (\"$n\" references).\n"
+            "3. Add key dimensions on NOTES (add_dimension). 4. check_cnc and fix issues. "
+            "5. take_screenshot to verify, then save_document.")
+
+
+@mcp.prompt()
+def prepare_for_cutting() -> str:
+    """Checklist to get the active document ready for the CNC shop."""
+    return ("Prepare the active Kerf document for cutting:\n"
+            "1. check_cnc and fix every issue (set_selection to show the user what you change).\n"
+            "2. Every part is an entity with the right qty (describe_entity / update_group).\n"
+            "3. Material, thickness, sheet size and tool diameter are set (set_material).\n"
+            "4. save_document, then export_cnc(format='dxf') and export_parts; report the files.")
 
 
 # ── MCP: layers ────────────────────────────────────────────
@@ -647,8 +828,8 @@ def move_layer(name: str, index: int) -> str:
 
 # ── MCP: preview & reference image ─────────────────────────
 
-@tool
-def take_screenshot(view: str = "2d"):
+@mcp.tool()
+async def take_screenshot(view: str = "2d"):
     """Image of the active document as rendered by the editor (the editor page must be open).
 
     Args:
@@ -657,19 +838,20 @@ def take_screenshot(view: str = "2d"):
               render in the background without changing what the user sees.
     """
     if view not in ("2d", "3d", "3d-exploded"):
-        raise DocError("view must be '2d', '3d' or '3d-exploded'")
+        return json.dumps({"error": "view must be '2d', '3d' or '3d-exploded'"})
     with store.changed:
         store.screenshot_png = None
         store.screenshot_view = view
         store.screenshot_requested = True
         store.changed.notify_all()
-    deadline = time.time() + 15
-    while time.time() < deadline:
-        if store.screenshot_png is not None:
+    for _ in range(75):                         # up to 15 s, without blocking other tools
+        await asyncio.sleep(0.2)
+        with store.lock:
             png, store.screenshot_png = store.screenshot_png, None
+        if png is not None:
             return Image(data=png, format="png")
-        time.sleep(0.2)
-    store.screenshot_requested = False
+    with store.lock:
+        store.screenshot_requested = False
     return json.dumps({"error": "No editor answered. Open http://localhost:8765/ in a browser."})
 
 
@@ -736,8 +918,9 @@ async def get_state(request):
 
 @api
 async def post_ops(request):
+    """Ops for a specific tab (the one the user was looking at), not whatever is active now."""
     body = await request.json()
-    results = store.apply(body["ops"], body.get("label"))
+    results = store.apply(body["ops"], body.get("label"), body.get("tab"))
     return state_json(results=results)
 
 
@@ -749,15 +932,15 @@ def action(fn):
     return handler
 
 
-post_undo = action(lambda b: store.undo())
-post_redo = action(lambda b: store.redo())
+post_undo = action(lambda b: store.undo(b.get("tab")))
+post_redo = action(lambda b: store.redo(b.get("tab")))
 post_new = action(lambda b: store.new(b.get("width", 800), b.get("height", 600)))
 post_open = action(lambda b: store.open(b["file"]))
 post_close = action(lambda b: store.close(b.get("tab"), b.get("discard", False)))
 post_activate = action(lambda b: store.activate(b["tab"]))
-post_revert = action(lambda b: store.revert())
-post_save = action(lambda b: store.save(b.get("file") or None))
-post_saved_local = action(lambda b: store.mark_saved_elsewhere(b["name"]))
+post_revert = action(lambda b: store.revert(b.get("tab")))
+post_save = action(lambda b: store.save(b.get("file") or None, b.get("tab")))
+post_saved_local = action(lambda b: store.mark_saved_elsewhere(b["name"], b.get("tab")))
 post_delete = action(lambda b: store.delete_file(b["file"]))
 post_mkdir = action(lambda b: store.make_folder(b["folder"]))
 
@@ -841,6 +1024,25 @@ async def index(request):
     return web.FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
+LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+
+
+@web.middleware
+async def local_only(request, handler):
+    """The API edits and deletes files: only serve this machine's browser. Blocks DNS rebinding
+    (Host check) and cross-site form posts (Origin + JSON content type)."""
+    host = (request.host or "").rsplit(":", 1)[0]
+    if host not in LOCAL_HOSTS:
+        return web.json_response({"error": "Forbidden host"}, status=403)
+    if request.method == "POST":
+        origin = request.headers.get("Origin")
+        if origin and origin.split("://", 1)[-1].rsplit(":", 1)[0] not in LOCAL_HOSTS:
+            return web.json_response({"error": "Forbidden origin"}, status=403)
+        if request.content_type != "application/json":
+            return web.json_response({"error": "Content-Type must be application/json"}, status=415)
+    return await handler(request)
+
+
 @web.middleware
 async def no_cache(request, handler):
     resp = await handler(request)
@@ -850,7 +1052,7 @@ async def no_cache(request, handler):
 
 
 def run_http_server():
-    app = web.Application(middlewares=[no_cache], client_max_size=64 * 1024 ** 2)
+    app = web.Application(middlewares=[local_only, no_cache], client_max_size=64 * 1024 ** 2)
     r = app.router
     r.add_get("/", index)
     r.add_get("/api/state", get_state)

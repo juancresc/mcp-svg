@@ -23,6 +23,7 @@ function accept(state) {
   if (!state) return;
   const sameInstance = state.instance === instance && app.server;
   if (!sameInstance || (state.doc && state.version > app.server.version)) {
+    if (instance && state.instance !== instance) emit('server-restarted');
     instance = state.instance;
     attachBackground(state.doc);
     const tabChanged = app.server?.active !== state.active;
@@ -78,16 +79,17 @@ function serial(fn) {
 }
 
 export const api = {
-  ops: (ops, label) => serial(() => call('POST', '/api/ops', { ops, label })),
-  undo: () => serial(() => call('POST', '/api/undo', {})),
-  redo: () => serial(() => call('POST', '/api/redo', {})),
+  // Edits name their tab, so they can't land in another document if the active tab changes
+  ops: (ops, label) => { const tab = app.server?.active; return serial(() => call('POST', '/api/ops', { ops, label, tab })); },
+  undo: () => { const tab = app.server?.active; return serial(() => call('POST', '/api/undo', { tab })); },
+  redo: () => { const tab = app.server?.active; return serial(() => call('POST', '/api/redo', { tab })); },
   newDoc: (width, height) => serial(() => call('POST', '/api/file/new', { width, height })),
   open: (file) => serial(() => call('POST', '/api/file/open', { file })),
   close: (tab, discard) => serial(() => call('POST', '/api/file/close', { tab, discard })),
   activate: (tab) => serial(() => call('POST', '/api/file/activate', { tab })),
-  revert: () => serial(() => call('POST', '/api/file/revert', {})),
-  save: (file) => serial(() => call('POST', '/api/file/save', { file })),
-  savedLocal: (name) => serial(() => call('POST', '/api/file/saved-local', { name })),
+  revert: () => { const tab = app.server?.active; return serial(() => call('POST', '/api/file/revert', { tab })); },
+  save: (file) => { const tab = app.server?.active; return serial(() => call('POST', '/api/file/save', { file, tab })); },
+  savedLocal: (name) => { const tab = app.server?.active; return serial(() => call('POST', '/api/file/saved-local', { name, tab })); },
   mkdir: (folder) => serial(() => call('POST', '/api/file/mkdir', { folder })),
   deleteFile: (file) => serial(() => call('POST', '/api/file/delete', { file })),
   importSvg: (svg, opts = {}) => serial(() => call('POST', '/api/file/import', { svg, ...opts })),

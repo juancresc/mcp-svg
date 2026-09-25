@@ -2,8 +2,8 @@ services:
   kerf:
     build: ./mcp-server
     ports:
-      - "8765:8765"   # editor UI + HTTP API
-      - "8766:8766"   # MCP (SSE)
+      - "127.0.0.1:8765:8765"   # editor UI + HTTP API (this machine only)
+      - "127.0.0.1:8766:8766"   # MCP (SSE)
     environment:
       - HTTP_PORT=8765
       - MCP_PORT=8766

@@ -1,7 +1,7 @@
 // User actions shared by the menus, toolbar, keyboard shortcuts and panels.
 
 import { app, emit, setSelection, selectedElements, elementById, selectedItems, selectItems, elementsOf,
-         groupById, setContext } from './state.js';
+         groupById, setContext, setTabView } from './state.js';
 import { api } from './api.js';
 import { modal, confirmDialog, toast, esc, download, pickFile, fmt } from './ui.js';
 import { moveAttrs, docToPng } from './geometry.js';
@@ -28,6 +28,7 @@ async function askSave(name, verb) {
 // ── Tabs ───────────────────────────────────────────────────
 
 export async function closeTab(tabId = app.server.active) {
+  delete app.tabViews[tabId];
   const tab = app.server.tabs.find(t => t.id === tabId);
   if (!tab) return;
   let discard = false;
@@ -38,26 +39,25 @@ export async function closeTab(tabId = app.server.active) {
     if (choice === 'save' && !(await save())) return;
     discard = choice === 'discard';
   }
-  app.previewTabs.delete(tabId);
   localHandles.delete(tabId);
   await api.close(tabId, discard);
 }
 
-export async function switchTab(tabId, view = '2d') {
-  app.view = view;
+/** Show a document tab; `view` switches between its Drawing (2d) and 3D views. */
+export async function switchTab(tabId, view) {
+  if (view) setTabView(tabId, view);
+  app.view = app.tabViews[tabId] || '2d';
   if (tabId !== app.server.active) await api.activate(tabId);
   emit('view-mode');
 }
 
 export function open3d(tabId = app.server.active) {
-  app.previewTabs.add(tabId);
   switchTab(tabId, '3d');
 }
 
-export function close3d(tabId) {
-  app.previewTabs.delete(tabId);
-  if (app.view === '3d' && tabId === app.server.active) app.view = '2d';
-  emit('view-mode');
+export function toggle3d() {
+  const tab = app.server.active;
+  switchTab(tab, (app.tabViews[tab] || '2d') === '3d' ? '2d' : '3d');
 }
 
 // ── File ───────────────────────────────────────────────────
@@ -113,7 +113,7 @@ export async function newDocument() {
 function afterSwitch() {
   setSelection([]);
   setContext(null);
-  app.view = '2d';
+  app.view = app.tabViews[app.server.active] || '2d';
   emit('view-mode');
   requestAnimationFrame(canvas.zoomFit);
 }
@@ -325,9 +325,8 @@ export async function importDxf(intoDocument = false) {
 // ── Export ─────────────────────────────────────────────────
 
 function exportNote() {
-  const hidden = app.doc.layers.filter(l => l.export && !l.visible).map(l => l.name);
   const skipped = app.doc.layers.filter(l => !l.export).map(l => l.name);
-  return `mm units${skipped.length ? `, without ${skipped.join(', ')}` : ''}${hidden.length ? ` (hidden: ${hidden.join(', ')})` : ''}`;
+  return `mm units${skipped.length ? `, without ${skipped.join(', ')}` : ''}`;
 }
 
 export function exportCnc() {
@@ -356,12 +355,48 @@ export function downloadSvg() {
 export async function export3d(format) {
   const { exportModel } = await import('./preview3d.js');
   const ok = await exportModel(format);
-  if (ok) toast(`3D model exported as ${format.toUpperCase()}`, 'ok');
+  if (ok) toast(format === 'png' ? '3D view saved as PNG' : `3D model exported as ${format.toUpperCase()}`, 'ok');
 }
 
 export async function exportPng() {
   const c = await docToPng(app.doc);
   c.toBlob(b => download(b, `${app.server.name}.png`), 'image/png');
+}
+
+export async function materialDialog() {
+  const m = app.doc.material || {};
+  let v = null;
+  const TYPES = ['plywood', 'wood', 'board', 'plastic', 'metal', 'foam', 'other'];
+  const ok = await modal({
+    title: 'Material & stock',
+    html: `<div class="kv">
+      <label>Preset</label><select name="preset" class="field"><option value="">— keep current —</option>${MATERIAL_PRESETS.map((p, i) =>
+        `<option value="${i}">${esc(p.name)} mm</option>`).join('')}</select>
+      <label>Material</label><input name="name" class="field" value="${esc(m.name || '')}">
+      <label>Type</label><select name="type" class="field">${TYPES.map(t => `<option ${t === m.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <label>Thickness</label><input name="thickness" type="number" step="any" min="0.1" class="field" value="${m.thickness ?? 18}">
+      <label>Colour (3D)</label><input name="color" type="color" value="${esc(m.color || '#e3c592')}" style="width:60px;height:28px">
+      <label>Sheet (mm)</label><div class="pair"><input name="sheet_width" type="number" step="any" class="field" value="${m.sheet_width ?? 2440}">
+        <input name="sheet_height" type="number" step="any" class="field" value="${m.sheet_height ?? 1220}"></div>
+      <label>Tool Ø (mm)</label><input name="tool_diameter" type="number" step="any" class="field" value="${m.tool_diameter ?? 6}">
+      <label>Notes</label><textarea name="notes" class="field" placeholder="Supplier, grain direction, feeds…">${esc(m.notes || '')}</textarea>
+    </div>
+    <p class="hint" style="margin-top:8px">Saved in the project. Thickness and colour are used by the 3D preview; sheet size and tool Ø by the CNC checks.</p>`,
+    buttons: [{ label: 'Cancel', value: false }, { label: 'Apply', value: true, kind: 'primary' }],
+    setup: (form) => form.preset.addEventListener('change', () => {
+      const p = MATERIAL_PRESETS[+form.preset.value];
+      if (!p) return;
+      form.name.value = p.name.replace(/ \d+.*$/, ''); form.type.value = p.type;
+      form.thickness.value = p.thickness; form.color.value = p.color;
+    }),
+    onSubmit: (form) => {
+      v = { name: form.name.value.trim(), type: form.type.value, thickness: +form.thickness.value, color: form.color.value,
+            sheet_width: +form.sheet_width.value, sheet_height: +form.sheet_height.value,
+            tool_diameter: +form.tool_diameter.value, notes: form.notes.value };
+      return v.thickness > 0;
+    },
+  });
+  if (ok) await api.ops([{ op: 'set_material', material: v }], 'Material');
 }
 
 export async function documentSize() {
@@ -412,8 +447,7 @@ export async function duplicate() {
   const usable = usableLayers();
   const items = selectedItems();
   if (!items.length) return;
-  const ops = [];
-  const plan = [];                   // per item: [op indexes] for regrouping
+  const ops = [], groupOps = [];
   for (const it of items) {
     const idx = [];
     for (const id of elementsOf(it)) {
@@ -423,20 +457,15 @@ export async function duplicate() {
       ops.push({ op: 'add_element', tag: e.tag, layer: e.layer, text: e.text, group: app.context || undefined,
                  attrs: { ...e.attrs, ...moveAttrs(e, d, d) } });
     }
-    plan.push({ it, idx });
+    if (it.startsWith('g-') && idx.length)
+      groupOps.push({ op: 'group', items: idx.map(i => '$' + i), name: `${groupById(it)?.name || 'Entity'} copy`, parent: app.context });
   }
   if (!ops.length) return;
-  const s = await api.ops(ops, 'Duplicate');
+  const n = ops.length;
+  const s = await api.ops([...ops, ...groupOps], 'Duplicate');     // one undo step
   if (!s?.results) return;
-  const newIds = s.results;
-  const groupOps = plan.filter(p => p.it.startsWith('g-') && p.idx.length)
-    .map(p => ({ op: 'group', items: p.idx.map(i => newIds[i]), name: `${groupById(p.it)?.name || 'Entity'} copy` }));
-  let finalIds = newIds;
-  if (groupOps.length) {
-    const g = await api.ops(groupOps, 'Duplicate');
-    if (g?.results) return selectItems([...g.results, ...plan.filter(p => !p.it.startsWith('g-')).flatMap(p => p.idx.map(i => newIds[i]))]);
-  }
-  setSelection(finalIds);
+  const grouped = new Set(groupOps.flatMap(g => g.items.map(x => +x.slice(1))));
+  selectItems([...s.results.slice(n), ...s.results.slice(0, n).filter((_, i) => !grouped.has(i))]);
 }
 
 export function selectAll() {
@@ -522,9 +551,9 @@ export async function addDimension() {
                'font-family': 'sans-serif', 'text-anchor': 'middle',
                ...(Math.abs(Math.atan2(uy, ux)) > 1e-3 ? { transform: `rotate(${r(normAngle(Math.atan2(uy, ux) * 180 / Math.PI))} ${r((a.x + b.x) / 2)} ${r((a.y + b.y) / 2)})` } : {}) } },
   ];
-  const s = await api.ops(ops, 'Add dimension');
+  ops.push({ op: 'group', items: ops.map((_, i) => '$' + i), name: `Dimension ${fmt(len)}` });
+  const s = await api.ops(ops, 'Add dimension');                     // one undo step
   if (!s?.results) return;
-  await api.ops([{ op: 'group', items: s.results, name: `Dimension ${fmt(len)}` }], 'Add dimension');
   canvas.clearMeasure();
   toast(`Dimension ${fmt(len)} mm added to ${layer.name}`, 'ok');
 }
