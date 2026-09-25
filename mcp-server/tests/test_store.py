@@ -459,3 +459,11 @@ def test_project_title_is_separate_from_file(tmp_path):
     assert Document.from_svg(s.doc.to_svg("file")).title == "My desk v4"
     s.apply([{"op": "set_title", "title": ""}])
     assert s.tab.name == "desk-final"
+
+
+def test_save_accepts_commas_and_parentheses(tmp_path):
+    s = Store(tmp_path)
+    s.save("Standing desk (Jaswig-style, v4)")
+    assert s.file == "Standing desk (Jaswig-style, v4).kerf"
+    with pytest.raises(DocError, match="use letters"):
+        s.save("bad:name")

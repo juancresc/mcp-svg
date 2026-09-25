@@ -312,8 +312,8 @@ class Store:
         if ext and not name.lower().endswith(ext):
             name += ext
         parts = name.split("/")
-        if any(p in ("", ".", "..") or p.startswith(".") or not re.fullmatch(r"[\w \-.()]+", p) for p in parts):
-            raise DocError(f"Invalid file name '{name}'")
+        if any(p in ("", ".", "..") or p.startswith(".") or not re.fullmatch(r"[\w \-.,()]+", p) for p in parts):
+            raise DocError(f"Invalid file name '{name}': use letters, digits, spaces and - _ . , ( )")
         path = (self.data_dir / name).resolve()
         if self.data_dir.resolve() not in path.parents:
             raise DocError(f"Invalid file name '{name}'")

@@ -24,7 +24,7 @@ const MENUS = [
     '-',
     ['Save', actions.save, MOD + 'S'],
     ['Save As…', () => actions.saveAs(), SHIFT + MOD + 'S'],
-    ['Save to computer…', actions.saveToComputer],
+    ['Download project (.kerf)', actions.saveToComputer],
     ['Revert to saved', actions.revert, null, () => !!app.server?.file],
     '-',
     ['# Import'],

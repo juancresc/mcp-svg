@@ -149,9 +149,9 @@ async function browseDialog(mode, { suggestion = '', folder = '' } = {}) {
       <div class="file-list"></div>
       ${mode === 'save' ? `<div class="fb-name"><label>File name</label><input name="name" class="field" value="${esc(suggestion)}"></div>` : ''}
       <p class="hint" style="margin-top:8px">${mode === 'save'
-        ? 'Saved as a Kerf project (.kerf): layers, entities, 3D placements, material. SVG/DXF are in Export. “Save to computer…” saves anywhere on your machine.'
+        ? 'Saved as a Kerf project (.kerf): layers, entities, 3D placements, material. SVG/DXF are in Export. “Download” saves a copy to your browser’s downloads folder.'
         : '📐 projects (.kerf) · 🖼 SVG and 📏 DXF open as new documents. “Open from computer…” opens files from anywhere on your machine.'}</p>`,
-    buttons: [{ label: mode === 'save' ? 'Save to computer…' : 'Open from computer…', value: 'computer', left: true },
+    buttons: [{ label: mode === 'save' ? 'Download .kerf' : 'Open from computer…', value: 'computer', left: true },
       { label: 'Cancel', value: null }, { label: mode === 'save' ? 'Save' : 'Open', value: 'ok', kind: 'primary' }],
     setup: (form, close) => {
       form.closest('dialog').classList.add('wide');
@@ -243,11 +243,14 @@ export async function save() {
   }
   const handle = localHandles.get(app.server.active);
   if (handle) return writeToHandle(handle);
-  return saveAs(tab?.name);
+  return saveAs(fileSafe(tab?.name));
 }
 
+/** A project name → something usable as a file name (the server allows letters, digits, space - _ . , ( )). */
+const fileSafe = (name) => (name || '').replace(/[^\p{L}\p{N} \-_.,()]+/gu, ' ').replace(/\s+/g, ' ').trim().replace(/^\.+/, '') || 'untitled';
+
 export async function saveAs(initial) {
-  const suggestion = initial || (app.server.file ? app.server.file.split('/').pop().replace(/\.(kerf|svgcnc)$/, '') : app.server.name || 'untitled');
+  const suggestion = fileSafe(initial || (app.server.file ? app.server.file.split('/').pop().replace(/\.(kerf|svgcnc)$/, '') : app.server.name));
   const folder = app.server.file && app.server.file.includes('/') ? app.server.file.split('/').slice(0, -1).join('/') : '';
   const r = await browseDialog('save', { suggestion, folder });
   if (!r) return false;
@@ -279,17 +282,9 @@ async function writeToHandle(handle) {
   }
 }
 
+/** Save to computer = a plain download of the .kerf (the browser puts it in its downloads folder). */
 export async function saveToComputer() {
-  const name = `${app.server.name || 'untitled'}.kerf`;
-  if (window.showSaveFilePicker) {
-    let handle;
-    try {
-      handle = await window.showSaveFilePicker({ suggestedName: name,
-        types: [{ description: 'Kerf project', accept: { 'application/json': ['.kerf'] } }] });
-    } catch (_) { return false; }  // cancelled
-    localHandles.set(app.server.active, handle);
-    return writeToHandle(handle);
-  }
+  const name = `${fileSafe(app.server.name)}.kerf`;
   const svg = await api.exportText('project');
   download(new Blob([svg], { type: 'application/json' }), name);
   await api.savedLocal(name);
