@@ -300,13 +300,18 @@ export function setExplode(v) {
   if (parts.length) applyParams();
 }
 
+let panelCollapsed = (() => { try { return !!localStorage.getItem('kerf.p3Collapsed'); } catch (_) { return false; } })();
+
 function renderPanel(mode, count) {
   const params = app.doc.params || [];
   for (const p of params) if (values[p.name] === undefined) values[p.name] = p.min ?? 0;
   const m = app.doc.material || {};
   const moving = parts.filter(p => p.move).length;
-  panel.innerHTML = `<h3 class="p3-head"><span>3D preview — ${esc(app.server.name)}</span>
+  panel.classList.toggle('collapsed', panelCollapsed);
+  panel.innerHTML = `<h3 class="p3-head"><button class="p3-toggle" data-collapse title="${panelCollapsed ? 'Show' : 'Hide'} the panel">${panelCollapsed ? '▸' : '▾'}</button>
+      <span class="p3-title" data-collapse>3D preview — ${esc(app.server.name)}</span>
       <button class="link-btn" data-edit="rename-project" title="Rename the project (not the file)">Rename</button></h3>
+    <div class="p3-body">
     <div class="p3-line"><span>${mode === 'assembly' ? `${count} part(s), assembled` : `${count} piece(s) shown lying flat`}
       · ${esc(m.name || 'material')} ${m.thickness || 18} mm</span>
       <button class="link-btn" data-edit="material-dialog" title="Material, thickness and colour: every part is extruded to this thickness">Material…</button></div>
@@ -324,7 +329,8 @@ function renderPanel(mode, count) {
     ${mode === 'flat' ? `<p class="note">No part has a 3D position yet, so everything is shown flat, as on the sheet, at the material thickness.
       To assemble: group each part (select its shapes → ⌘G), then “Place in 3D…” in the Inspector — or ask Claude to place them.</p>` : ''}
     <p class="note">${navMode === 'move' ? 'Drag: move' : 'Drag: rotate'} · Shift+drag or right-drag: ${navMode === 'move' ? 'rotate' : 'move'} · scroll: zoom to pointer ·
-      arrows: move · double-click a part: centre on it</p>`;
+      arrows: move · double-click a part: centre on it</p>
+    </div>`;
 }
 
 const fmtParam = (p, v) => `${+(v + (p.display_offset || 0)).toFixed(2)}${p.unit ? ' ' + p.unit : ''}`;
@@ -343,6 +349,15 @@ panel.addEventListener('input', (e) => {
   applyParams();
 });
 panel.addEventListener('click', (e) => {
+  if (e.target.closest('[data-collapse]')) {
+    panelCollapsed = !panelCollapsed;
+    try { localStorage.setItem('kerf.p3Collapsed', panelCollapsed ? '1' : ''); } catch (_) {}
+    const t = panel.querySelector('.p3-toggle');
+    panel.classList.toggle('collapsed', panelCollapsed);
+    t.textContent = panelCollapsed ? '▸' : '▾';
+    t.title = `${panelCollapsed ? 'Show' : 'Hide'} the panel`;
+    return;
+  }
   const ed = e.target.closest('[data-edit]')?.dataset.edit;
   if (ed) { document.dispatchEvent(new Event(ed)); return; }
   if (e.target.closest('[data-fit]')) fitView();

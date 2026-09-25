@@ -434,6 +434,11 @@ dialog:has(.connect) { max-width: min(760px, calc(100vw - 32px)); width: 760px; 
 .view3d-panel .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .view3d-panel .note { color: var(--muted); line-height: 1.4; margin-top: 6px; }
 .view3d-panel .p3-head, .view3d-panel .p3-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.view3d-panel .p3-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; cursor: pointer; }
+.p3-toggle { border: 0; background: none; padding: 0 2px; cursor: pointer; color: var(--muted); font-size: 11px; }
+.view3d-panel.collapsed { min-width: 0; }
+.view3d-panel.collapsed .p3-body { display: none; }
+.view3d-panel.collapsed .p3-head { margin: 0; }
 .link-btn { border: 0; background: none; padding: 0; color: var(--accent, #2d6cdf); cursor: pointer; font: inherit; font-size: 11px;
   text-transform: none; letter-spacing: 0; white-space: nowrap; }
 .link-btn:hover { text-decoration: underline; }
