@@ -114,7 +114,7 @@ resizer.addEventListener('pointerdown', (e) => {
 });
 resizer.addEventListener('dblclick', () => { setSideW(320); try { localStorage.removeItem('kerf.sideW'); } catch (_) {} canvas.drawRulers(); });
 
-document.getElementById('connect-claude').addEventListener('click', connectDialog);
+document.getElementById('connect-claude').addEventListener('click', () => connectDialog());
 
 // Edit links in the 3D panel
 document.addEventListener('rename-project', () => actions.renameProject());
