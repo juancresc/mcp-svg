@@ -1,10 +1,23 @@
-- Id like an easier way to select elements, specially for lines is too hard sometimes, maybe selecting in a square by click and drag.
-- when selecting and code is opened, highlight the element in the code
-- zoom functionality, could be scrolling up and down. And a new tool taht is the hand that moves in the zoomed area. Also a zoom control at the top
-- when the code viewer is opened, there should not be a scrollbar, it should fit the screen. 
-- new file, allow me to enter canvas size in cms or inches
-- Import files
-- We could have a file explorer and files under data/ mounting that to docker. Save file, import etc and an explorer.
-- I should be able to add or edit or remove layers in the UI, also from the mcp. I should be able to show or hide. Also move elements from layers. All from the UI and MCP
-- changeset? to allow rollbacks. we might need a storage system for that. 
-- export to cad
+# TODOs
+
+## Done
+- [x] Easier selection: box-select by dragging (left→right = fully inside, right→left = touching), click-through entities, Shift adds.
+- [x] Selected element highlighted in the code panel (and scrolled into view).
+- [x] Zoom: ⌘-scroll, zoom controls in the toolbar (−, %, +, fit), pan tool and Space-drag.
+- [x] Code panel fits the window (fixed height, resizable, no page scrollbar).
+- [x] New file: canvas size in mm, cm or inches.
+- [x] Import files: SVG and DXF.
+- [x] File browser for the data/ folder (mounted in Docker): Open, Save, Save As, new folders; also Save to computer.
+- [x] Layers from the UI and MCP: add, rename, colour, line style, show/hide, lock, reorder, move elements between layers, description, pocket depth, export flag.
+- [x] Rollbacks: per-tab undo/redo (one step per action, MCP batches included), Revert to saved, autosaved session.
+- [x] Export to CAD: DXF (true arcs and circles), CNC SVG in mm, parts per entity (SVG + DXF zip), GLB/STL 3D.
+- [x] Project name separate from the file name (tab, Inspector, File → Rename project, MCP `set_project_name`).
+
+## Open
+- [ ] Persistent history across server restarts (undo stacks are in memory; the autosaved session keeps only the documents).
+- [ ] CNC export that converts shapes and text to paths.
+- [ ] Generators as a first-class feature (see README → Ideas).
+- [ ] Better app name than "Kerf" (too generic).
+- [ ] Saving depends on who you are (for the deployed version):
+  - not logged in: work only on the computer (open from / download to your machine; nothing is stored on the server);
+  - logged in: projects are saved on the server, in the user's own space (Open/Save As browse their files).

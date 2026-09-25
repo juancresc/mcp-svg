@@ -1,6 +1,6 @@
 {
   "mcpServers": {
-    "svg-editor": {
+    "kerf": {
       "type": "sse",
       "url": "http://localhost:8766/sse"
     }
