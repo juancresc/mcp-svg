@@ -74,7 +74,8 @@ data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (
   - elements: `add_element, update_element, remove_elements, reorder_element`;
   - layers: `add_layer, update_layer, set_layer_visibility, remove_layer, move_layer`;
   - document: `set_size, set_background(_opacity), clear, replace_svg, import_svg, set_material, set_params`;
-  - entities: `group, ungroup, update_group`.
+  - entities: `group, ungroup, update_group, set_group` (move items into an entity or out of it);
+  - `set_title` (the project name).
 - Undo/redo and dirty tracking are per tab. Visibility is view state: not undoable, doesn't make the file dirty.
 - `dirty` means the content fingerprint differs from the last save/open. Rapid single-field edits coalesce into one undo step.
 - Each state response carries the active tab's doc. The reference image is only an id; the image itself comes from `GET /api/background`.
@@ -94,9 +95,10 @@ The compose file publishes both ports on 127.0.0.1 only. The `local_only` middle
 
 The server also sends workflow instructions to the client (`INSTRUCTIONS` in server.py).
 
-- **Projects/tabs:** `get_document_info, list_documents, list_files, list_tabs, switch_tab, new_document, open_document, save_document, close_document, revert_document, set_canvas_size, set_material, undo, redo`
+- **Projects/tabs:** `get_document_info, list_documents, list_files, list_tabs, switch_tab, new_document, open_document, save_document, close_document, revert_document, set_project_name, set_canvas_size, set_material, undo, redo`
+- **Guide:** `get_guide(topic)`: workflow, layers, 3D placement recipes, CNC rules (also `GET /api/guide`, Help → Kerf guide). Keep `mcp-server/guide.md` up to date when conventions change.
 - **Elements:** `list_elements, add_element, add_svg` (many shapes at once, one undo step), `update_element, remove_element, set_element_layer, move_elements, transform_elements, duplicate, reorder, clear_document, get_svg`
-- **Entities/3D:** `list_groups, group_elements, ungroup, update_group` (name, qty, assembly), `set_params`
+- **Entities/3D:** `list_groups, group_elements, ungroup, update_group` (name, qty, assembly), `move_to_entity`, `set_params`
 - **Layers:** `list_layers, add_layer, update_layer, remove_layer, move_layer` (with `depth` for pockets)
 - **Measure/selection:** `measure, add_dimension, get_selection, set_selection`
 - **Import/export:** `import_dxf, export_cnc` (svg|dxf), `export_svg, export_parts`

@@ -341,6 +341,26 @@ class Document:
                 self.element(i).group = g.id
         return g
 
+    def move_to_group(self, items: list[str], gid: str | None) -> int:
+        """Put elements and/or entities into entity `gid` (None = the top level). Entities left
+        empty are removed. An entity can't go inside itself or one of its own sub-entities."""
+        items = list(dict.fromkeys(items or []))
+        if not items:
+            raise DocError("Nothing to move")
+        if gid:
+            self.group_by_id(gid)
+            inside = self.ancestors(gid)
+        for i in items:
+            if i.startswith("g-"):
+                g = self.group_by_id(i)
+                if gid and i in inside:
+                    raise DocError(f"Can't put '{g.name}' inside itself")
+                g.parent = gid
+            else:
+                self.element(i).group = gid
+        self.prune_groups()
+        return len(items)
+
     def ungroup(self, gid: str) -> int:
         g = self.group_by_id(gid)
         n = 0

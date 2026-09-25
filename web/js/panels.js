@@ -256,6 +256,7 @@ function renderInspectorContent() {
         <label>Position</label><span class="val">${box ? `${fmt(box.x)}, ${fmt(box.y)}` : '—'}</span>
         <label>Layer</label>${layerSelect(layers.size === 1 ? [...layers][0] : '')}
       </div>
+      ${entityRow()}
       ${buttons()}`;
   } else {
     const el = sel[0];
@@ -283,6 +284,7 @@ function renderInspectorContent() {
         ${el.attrs.transform ? `<label>transform</label><input type="text" data-attr="transform" value="${esc(el.attrs.transform)}">` : ''}
       </div>
       <p class="hint" style="margin-top:8px">Stroke colour and line style come from the layer.</p>
+      ${entityRow()}
       ${buttons()}`;
     bindShapeFields(el);
   }
@@ -293,6 +295,15 @@ function renderInspectorContent() {
   inspector.querySelector('[data-front]')?.addEventListener('click', () => actions.reorder('front'));
   inspector.querySelector('[data-back]')?.addEventListener('click', () => actions.reorder('back'));
   inspector.querySelector('[data-zoom]')?.addEventListener('click', () => canvas.zoomToSelection());
+}
+
+/** Which entity the selection is in, with Add / Remove buttons. */
+function entityRow() {
+  const g = app.context ? groupById(app.context) : null;
+  return `<div class="kv ent-kv"><label>Entity</label><div class="ent-row">
+      <span class="${g ? '' : 'muted'}">${g ? esc(g.name) : 'none'}</span>
+      ${g ? '<button class="link-btn" data-action="removeFromEntity" title="Take the selection out of this entity">Remove</button>' : ''}
+      <button class="link-btn" data-action="addToEntity" title="Put the selection into an entity">Add to…</button></div></div>`;
 }
 
 function layerSelect(current) {
@@ -471,8 +482,8 @@ export function renderEntities() {
   const rows = [];
   const walk = (parent, depth) => {
     for (const g of groups.filter(g => (g.parent || null) === parent)) {
-      rows.push(`<div class="entity ${sel.has(g.id) ? 'selected' : ''}" data-gid="${esc(g.id)}" style="padding-left:${6 + depth * 14}px"
-        title="Click: select · double-click: enter (edit inside)">
+      rows.push(`<div class="entity ${sel.has(g.id) ? 'selected' : ''}" data-gid="${esc(g.id)}" draggable="true" style="padding-left:${6 + depth * 14}px"
+        title="Click: select · double-click: enter (edit inside) · drag onto another entity to nest it">
         <span class="ent-name">${esc(g.name)}</span>
         ${g.assembly ? '<span class="ent-3d" title="Placed in the 3D preview">3D</span>' : ''}
         <span class="ent-meta">×${g.qty} · ${counts.get(g.id)}</span></div>`);
@@ -493,6 +504,34 @@ entitiesBox.addEventListener('click', (e) => {
   if ((g.parent || null) !== app.context) setContext(g.parent || null);
   canvas.render();
   selectItems([g.id]);
+});
+// Drag an entity onto another to nest it; onto empty space to move it to the top level
+entitiesBox.addEventListener('dragstart', (e) => {
+  const row = e.target.closest('[data-gid]');
+  if (!row) return;
+  e.dataTransfer.setData('text/x-kerf-entity', row.dataset.gid);
+  e.dataTransfer.effectAllowed = 'move';
+});
+entitiesBox.addEventListener('dragover', (e) => {
+  if (!e.dataTransfer.types.includes('text/x-kerf-entity')) return;
+  e.preventDefault();
+  entitiesBox.querySelectorAll('.drop-into').forEach(n => n.classList.remove('drop-into'));
+  (e.target.closest('[data-gid]') || entitiesBox).classList.add('drop-into');
+});
+entitiesBox.addEventListener('dragleave', (e) => {
+  if (!entitiesBox.contains(e.relatedTarget)) entitiesBox.querySelectorAll('.drop-into').forEach(n => n.classList.remove('drop-into'));
+  if (!entitiesBox.contains(e.relatedTarget)) entitiesBox.classList.remove('drop-into');
+});
+entitiesBox.addEventListener('drop', async (e) => {
+  const gid = e.dataTransfer.getData('text/x-kerf-entity');
+  entitiesBox.querySelectorAll('.drop-into').forEach(n => n.classList.remove('drop-into'));
+  entitiesBox.classList.remove('drop-into');
+  if (!gid) return;
+  e.preventDefault();
+  const target = e.target.closest('[data-gid]')?.dataset.gid || null;
+  if (target === gid || (groupById(gid)?.parent || null) === target) return;
+  const s = await api.ops([{ op: 'set_group', items: [gid], group: target }], target ? 'Nest entity' : 'Move entity to top');
+  if (s) toast(target ? `Moved into “${groupById(target)?.name}”` : 'Moved to the top level', 'ok');
 });
 entitiesBox.addEventListener('dblclick', (e) => {
   const row = e.target.closest('[data-gid]');
@@ -533,6 +572,8 @@ function renderGroupInspector(g, sel) {
     <div class="btn-row">
       <button class="btn" data-enter>Enter (edit inside)</button>
       <button class="btn" data-ungroup>Ungroup</button>
+      <button class="btn" data-action="addToEntity" title="Nest this entity inside another one">Put inside…</button>
+      ${g.parent ? `<button class="btn" data-action="removeFromEntity" title="Move it up one level">Take out of “${esc(groupById(g.parent)?.name || '')}”</button>` : '<span></span>'}
       <button class="btn" data-action="duplicate">Duplicate</button>
       <button class="btn" data-zoom>Zoom to</button>
       <button class="btn danger" data-action="deleteSelection" style="grid-column: span 2">Delete entity</button>

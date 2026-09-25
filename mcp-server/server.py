@@ -785,6 +785,18 @@ def design_part(description: str) -> str:
 
 
 @tool
+def move_to_entity(ids: list[str], entity: str = "") -> str:
+    """Add shapes or entities to an entity, or take them out of one. Entities left empty are removed.
+
+    Args:
+        ids: Element ids (el-…) and/or entity ids (g-…) to move.
+        entity: Target entity id (g-…). Empty = take them out to the top level.
+    """
+    n = store.apply([{"op": "set_group", "items": ids, "group": entity or None}])[0]
+    return json.dumps({"moved": n, "entity": entity or None})
+
+
+@tool
 def get_guide(topic: str = "") -> str:
     """The Kerf design guide: workflow, layers, 3D placement recipes (which rotation and matrix
     for side panels, boards, doors, mirrored parts, rods), CNC rules, SVG gotchas, children's

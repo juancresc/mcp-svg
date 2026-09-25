@@ -590,6 +590,8 @@ def apply_op(doc: Document, op: dict):
     # groups ("entities")
     if kind == "group":
         return doc.group(op["items"], op.get("name"), op.get("parent")).id
+    if kind == "set_group":
+        return doc.move_to_group(op["items"], op.get("group") or None)
     if kind == "ungroup":
         return doc.ungroup(op["id"])
     if kind == "update_group":
@@ -628,7 +630,7 @@ def describe(ops: list[dict]) -> str:
              "remove_layer": "Delete layer", "move_layer": "Move layer", "set_size": "Resize document",
              "set_background": "Background", "set_background_opacity": "Background opacity",
              "clear": "Clear", "replace_svg": "Edit code", "import_svg": "Import SVG",
-             "group": "Group", "ungroup": "Ungroup", "update_group": "Edit entity", "set_params": "Parameters",
+             "group": "Group", "ungroup": "Ungroup", "set_group": "Move to entity", "update_group": "Edit entity", "set_params": "Parameters",
              "set_material": "Material", "set_title": "Rename project"}
     kinds = {op.get("op") for op in ops}
     if len(kinds) == 1:

@@ -72,6 +72,8 @@ For a part drawn with bounding box `(ox, oy, w, h)`, **`matrix = [1, 0, 0, -1, -
 
 **Nested entities:** group a drawer's 5 part-entities into one "Drawer 1" entity (the `group` op accepts entity ids). Quantities (`qty`) are used by `export_parts`.
 
+**Fixing entities:** `move_to_entity(ids, entity)` (op `set_group {items, group}`) adds shapes or entities to an entity, or takes them out when `entity` is empty. Entities left empty disappear.
+
 ## CNC rules of thumb (18 mm plywood)
 
 - Inside corners get the tool radius (3 mm for a 6 mm end mill). Add dog-bones where a square part must fit in.

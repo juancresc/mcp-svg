@@ -467,3 +467,23 @@ def test_save_accepts_commas_and_parentheses(tmp_path):
     assert s.file == "Standing desk (Jaswig-style, v4).kerf"
     with pytest.raises(DocError, match="use letters"):
         s.save("bad:name")
+
+
+def test_move_to_group(tmp_path):
+    s = Store(tmp_path)
+    r = s.apply([{"op": "add_element", "tag": "rect", "attrs": {"x": 0, "y": 0, "width": 10, "height": 10}},
+                 {"op": "add_element", "tag": "circle", "attrs": {"cx": 5, "cy": 5, "r": 2}},
+                 {"op": "add_element", "tag": "circle", "attrs": {"cx": 8, "cy": 8, "r": 1}},
+                 {"op": "group", "items": ["$0", "$1"], "name": "Plate"},
+                 {"op": "group", "items": ["$3"], "name": "Assembly"}])
+    el3, plate, asm = r[2], r[3], r[4]
+    s.apply([{"op": "set_group", "items": [el3], "group": plate}])            # add a hole
+    assert s.doc.element(el3).group == plate
+    s.apply([{"op": "set_group", "items": [el3], "group": None}])             # take it out again
+    assert s.doc.element(el3).group is None
+    with pytest.raises(DocError, match="inside itself"):
+        s.apply([{"op": "set_group", "items": [asm], "group": plate}])
+    s.apply([{"op": "set_group", "items": [r[0], r[1]], "group": None}])      # empty → pruned
+    assert not s.doc.groups
+    s.undo()
+    assert {g.name for g in s.doc.groups} == {"Plate", "Assembly"}

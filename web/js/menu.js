@@ -53,6 +53,8 @@ const MENUS = [
     ['# Entities'],
     ['Group into entity…', actions.group, MOD + 'G', hasSel],
     ['Ungroup', actions.ungroup, SHIFT + MOD + 'G', hasGroupSel],
+    ['Add selection to entity…', () => actions.addToEntity(), null, hasSel],
+    ['Remove from entity', actions.removeFromEntity, null, () => hasSel() && !!app.context],
     ['Enter entity (edit inside)', actions.enterGroup, '↵', hasGroupSel],
     ['Exit entity', () => canvas.exitGroup(), 'Esc', () => !!app.context],
     '-',

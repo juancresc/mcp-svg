@@ -569,6 +569,66 @@ export async function ungroup() {
   setSelection(els);
 }
 
+/** Put the selected shapes/entities into an entity. With one entity + other things selected, the
+ *  others go into that entity; otherwise pick the entity from a list. */
+export async function addToEntity(target = null) {
+  let items = selectedItems();
+  if (!items.length) return toast('Select the shapes (or entities) to add first');
+  const groups = app.doc.groups || [];
+  const selGroups = items.filter(i => i.startsWith('g-'));
+  if (!target && selGroups.length === 1 && items.length > 1) {
+    target = selGroups[0];
+    items = items.filter(i => i !== target);
+  }
+  if (!target) {
+    // an entity can't go into itself or anything inside it
+    const blocked = new Set(selGroups);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const g of groups) if (g.parent && blocked.has(g.parent) && !blocked.has(g.id)) { blocked.add(g.id); grew = true; }
+    }
+    const depth = (g) => { let n = 0; while (g.parent) { g = groupById(g.parent); n++; } return n; };
+    const order = [];
+    const walk = (parent) => groups.filter(g => (g.parent || null) === parent).forEach(g => { order.push(g); walk(g.id); });
+    walk(null);
+    const choices = order.filter(g => !blocked.has(g.id));
+    if (!choices.length) return toast('No entity to add to yet — group some shapes first (⌘G)');
+    const ok = await modal({
+      title: `Add ${items.length === 1 ? 'it' : `${items.length} items`} to an entity`,
+      html: `<div class="kv"><label>Entity</label><select name="target" class="field">${choices.map(g =>
+        `<option value="${esc(g.id)}">${'\u00a0\u00a0'.repeat(depth(g))}${esc(g.name)}</option>`).join('')}</select></div>
+        <p class="hint" style="margin-top:8px">Tip: select an entity together with loose shapes (Shift-click) and the shapes go straight into it.
+        You can also drag entities onto each other in the Entities panel.</p>`,
+      buttons: [{ label: 'Cancel', value: false }, { label: 'Add', value: true, kind: 'primary' }],
+      onSubmit: (form) => { target = form.target.value; },
+    });
+    if (!ok || !target) return;
+  }
+  const s = await api.ops([{ op: 'set_group', items, group: target }], 'Add to entity');
+  if (!s) return;
+  setContext(groupById(target)?.parent || null);
+  canvas.render();
+  selectItems([target]);
+  toast(`Added to “${groupById(target)?.name}”`, 'ok');
+}
+
+/** Take the selected shapes/entities out of the entity they're in (one level up). */
+export async function removeFromEntity() {
+  const items = selectedItems();
+  if (!items.length) return toast('Select what to take out first');
+  const from = app.context ? groupById(app.context) : null;
+  if (!from) return toast('These aren’t inside an entity. Double-click an entity to go inside, then select shapes to take out.');
+  const els = items.flatMap(elementsOf);
+  const up = from.parent || null;
+  const s = await api.ops([{ op: 'set_group', items, group: up }], 'Remove from entity');
+  if (!s) return;
+  setContext(up && groupById(up) ? up : null);
+  canvas.render();
+  setSelection(els);
+  toast(`Taken out of “${from.name}”`, 'ok');
+}
+
 export function enterGroup() {
   const it = selectedItems().find(i => i.startsWith('g-'));
   if (it) canvas.enterGroup(it);

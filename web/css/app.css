@@ -409,6 +409,9 @@ dialog:has(.connect) { max-width: min(760px, calc(100vw - 32px)); width: 760px; 
 .entity.selected { background: var(--accent-soft); border-color: #bcd3fb; }
 .entity .ent-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .entity .ent-name input { width: 100%; font: inherit; padding: 1px 3px; border: 1px solid var(--accent); border-radius: 3px; }
+.entity.drop-into, #entities.drop-into { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
+.ent-kv { margin-top: 10px; }
+.ent-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .entity .ent-meta { font-size: 10px; color: var(--muted); }
 .entity .ent-3d { font-size: 9px; border: 1px solid #c9d7f0; color: #4a6aa8; border-radius: 3px; padding: 0 3px; }
 .entities-empty { font-size: 11.5px; color: var(--muted); line-height: 1.4; }
