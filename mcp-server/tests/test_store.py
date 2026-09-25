@@ -444,3 +444,18 @@ def test_dxf_import_mirrored_arc_and_units():
     from document import Document
     d = Document.from_svg(svg)
     assert d.width == pytest.approx(10 * 10 + 20 + 15, abs=0.5)   # -1.5..10 cm → 115 mm + margins
+
+
+def test_project_title_is_separate_from_file(tmp_path):
+    from document import Document, to_native, from_native
+    s = Store(tmp_path)
+    s.apply([{"op": "set_title", "title": "  My   desk\n v4 "}])
+    assert s.doc.title == "My desk v4"
+    assert s.tab.name == "My desk v4"
+    s.save("desks/desk-final")
+    assert s.file.endswith("desk-final.kerf") and s.tab.name == "My desk v4"
+    doc = from_native(to_native(s.doc))
+    assert doc.title == "My desk v4"
+    assert Document.from_svg(s.doc.to_svg("file")).title == "My desk v4"
+    s.apply([{"op": "set_title", "title": ""}])
+    assert s.tab.name == "desk-final"

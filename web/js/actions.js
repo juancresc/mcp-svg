@@ -363,6 +363,23 @@ export async function exportPng() {
   c.toBlob(b => download(b, `${app.server.name}.png`), 'image/png');
 }
 
+/** The project's name (shown on its tab, saved inside the file) — separate from the file name. */
+export async function renameProject() {
+  const s = app.server;
+  const tab = s.tabs.find(t => t.id === s.active);
+  const fileName = s.file ? s.file.split('/').pop() : (tab?.local_name || 'not saved yet');
+  let title = null;
+  const ok = await modal({
+    title: 'Rename project',
+    html: `<div class="kv"><label>Project name</label><input name="title" class="field" value="${esc(tab?.title || '')}" placeholder="${esc(s.name)}"></div>
+      <p class="hint" style="margin-top:8px">Shown on the tab and saved in the project. The file (${esc(fileName)}) keeps its name;
+      use Save As to change that. Leave empty to show the file name.</p>`,
+    buttons: [{ label: 'Cancel', value: false }, { label: 'Rename', value: true, kind: 'primary' }],
+    onSubmit: (form) => { title = form.title.value.trim(); },
+  });
+  if (ok && title !== (tab?.title || '')) await api.ops([{ op: 'set_title', title }], 'Rename project');
+}
+
 export async function materialDialog() {
   const m = app.doc.material || {};
   let v = null;

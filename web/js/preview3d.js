@@ -17,6 +17,17 @@ let built = null;            // doc version the scene was built from
 const values = {};           // current param values
 let explode = 0;             // 0 = assembled … 1 = fully exploded (assembly view)
 let navMode = 'rotate';      // left-drag: 'rotate' or 'move' (pan)
+let seeThrough = false;      // semi-transparent parts to see hidden pockets, pins, joints
+
+function applySeeThrough() {
+  for (const p of parts) {
+    const m = p.mesh.material;
+    m.transparent = seeThrough;
+    m.opacity = seeThrough ? 0.35 : 1;
+    m.depthWrite = !seeThrough;
+    m.needsUpdate = true;
+  }
+}
 
 function setNavMode(mode) {
   navMode = mode;
@@ -236,6 +247,7 @@ function buildScene() {
   computeExplodeDirections();
   applyParams();
   highlightSelection();
+  applySeeThrough();
   renderPanel(mode, count);
   built = app.server.version;
 }
@@ -265,6 +277,9 @@ function applyParams() {
       pos.add(new THREE.Vector3(ax[0], ax[1], ax[2]).multiplyScalar(values[p.move.param]));
     }
     if (explode && p.explodeDir) pos.add(p.explodeDir.clone().multiplyScalar(explode * explodeScale));
+    // Moving parts (the ones a slider drives) also lift off the fixed base as one assembly, so
+    // mechanisms hidden between them — like a sawtooth on an inner face — come into view
+    if (explode && p.move) pos.y += explode * explodeScale * 0.9;
     p.mesh.position.copy(pos);
   }
 }
@@ -278,17 +293,23 @@ function renderPanel(mode, count) {
   const params = app.doc.params || [];
   for (const p of params) if (values[p.name] === undefined) values[p.name] = p.min ?? 0;
   const m = app.doc.material || {};
-  panel.innerHTML = `<h3>3D preview — ${esc(app.server.name)}</h3>
-    <div>${mode === 'assembly' ? `${count} part(s), assembled` : `${count} piece(s) shown lying flat`}
-      · ${esc(m.name || 'material')} ${m.thickness || 18} mm</div>
-    ${params.map(p => `<div class="param"><label><span>${esc(p.label || p.name)}</span>
+  const moving = parts.filter(p => p.move).length;
+  panel.innerHTML = `<h3 class="p3-head"><span>3D preview — ${esc(app.server.name)}</span>
+      <button class="link-btn" data-edit="rename-project" title="Rename the project (not the file)">Rename</button></h3>
+    <div class="p3-line"><span>${mode === 'assembly' ? `${count} part(s), assembled` : `${count} piece(s) shown lying flat`}
+      · ${esc(m.name || 'material')} ${m.thickness || 18} mm</span>
+      <button class="link-btn" data-edit="material-dialog" title="Material, thickness and colour: every part is extruded to this thickness">Material…</button></div>
+    ${params.map(p => `<div class="param" title="A slider of this project. Parts whose 3D placement “moves with” it slide along their axis. Only changes the preview, not the drawing."><label><span>${esc(p.label || p.name)}</span>
       <b data-val="${esc(p.name)}">${fmtParam(p, values[p.name])}</b></label>
       <input type="range" min="${p.min ?? 0}" max="${p.max ?? 100}" step="${p.step ?? 1}" value="${values[p.name]}" data-param="${esc(p.name)}"></div>`).join('')}
-    ${count > 1 ? `<div class="param"><label><span>Assembly view (explode)</span><b data-val="__explode">${Math.round(explode * 100)}%</b></label>
+    ${params.length ? `<p class="note">${params.length > 1 ? 'Sliders move' : 'The slider moves'} ${moving} linked part(s) — preview only, the drawing is unchanged.</p>` : ''}
+    <div class="row"><button class="btn" data-edit="edit-sliders" title="Add, rename or change the range of the sliders (Inspector → 3D sliders)">${params.length ? 'Edit sliders…' : 'Add a slider…'}</button></div>
+    ${count > 1 ? `<div class="param" title="Pulls the parts apart, like an assembly manual. Parts that a slider moves also lift off the fixed base, so hidden joints show."><label><span>Assembly view (explode)</span><b data-val="__explode">${Math.round(explode * 100)}%</b></label>
       <input type="range" min="0" max="1" step="0.01" value="${explode}" data-explode></div>` : ''}
     <div class="row nav-row"><span class="seg"><button class="btn ${navMode === 'rotate' ? 'on' : ''}" data-nav="rotate" title="Left-drag rotates">Rotate</button><button
         class="btn ${navMode === 'move' ? 'on' : ''}" data-nav="move" title="Left-drag moves (pans) the view">Move</button></span>
-      <button class="btn" data-fit>Reset view</button></div>
+      <button class="btn" data-fit>Reset view</button>
+      <button class="btn ${seeThrough ? 'on' : ''}" data-see title="Semi-transparent parts: see pockets, pins and joints inside">See-through</button></div>
     ${mode === 'flat' ? `<p class="note">No part has a 3D position yet, so everything is shown flat, as on the sheet, at the material thickness.
       To assemble: group each part (select its shapes → ⌘G), then “Place in 3D…” in the Inspector — or ask Claude to place them.</p>` : ''}
     <p class="note">${navMode === 'move' ? 'Drag: move' : 'Drag: rotate'} · Shift+drag or right-drag: ${navMode === 'move' ? 'rotate' : 'move'} · scroll: zoom to pointer ·
@@ -311,7 +332,11 @@ panel.addEventListener('input', (e) => {
   applyParams();
 });
 panel.addEventListener('click', (e) => {
+  const ed = e.target.closest('[data-edit]')?.dataset.edit;
+  if (ed) { document.dispatchEvent(new Event(ed)); return; }
   if (e.target.closest('[data-fit]')) fitView();
+  const see = e.target.closest('[data-see]');
+  if (see) { seeThrough = !seeThrough; see.classList.toggle('on', seeThrough); applySeeThrough(); }
   const nav = e.target.closest('[data-nav]');
   if (nav) { setNavMode(nav.dataset.nav); renderPanelNote(); }
 
@@ -347,8 +372,9 @@ export async function show() {
   if (first) fitView();
 }
 
-/** PNG of the assembled model; works while the 3D tab is hidden (renders off-screen). */
-export async function capture(width = 1600, height = 1000, explodeOverride = null) {
+/** PNG of the assembled model; works while the 3D tab is hidden (renders off-screen).
+ *  fit: frame the whole model (the user's camera is restored afterwards); false = the current view. */
+export async function capture(width = 1600, height = 1000, explodeOverride = null, fit = true) {
   if (!await loadThree()) return null;
   if (!renderer) { try { setup(); } catch (_) { return null; } }
   const fresh = built === null;
@@ -361,11 +387,13 @@ export async function capture(width = 1600, height = 1000, explodeOverride = nul
   }
   const saved = explode;
   if (explodeOverride !== null) setExplode(explodeOverride);
-  if (fresh || !visible || explodeOverride !== null) fitView();
+  const view = { pos: camera.position.clone(), target: controls.target.clone() };
+  if (fresh || fit || !visible) fitView();
   controls.update();
   renderer.render(scene, camera);
   const data = renderer.domElement.toDataURL('image/png');
   if (explodeOverride !== null) setExplode(saved);
+  if (!fresh) { camera.position.copy(view.pos); controls.target.copy(view.target); controls.update(); }
   if (visible) return data;
   resize();
   return data;
@@ -374,7 +402,7 @@ export async function capture(width = 1600, height = 1000, explodeOverride = nul
 /** Export the assembled model (current slider positions): 'glb' (glTF binary, colours) or 'stl'. */
 export async function exportModel(format) {
   if (format === 'png') {                      // the 3D view as an image
-    const data = await capture(2400, 1500);
+    const data = await capture(2400, 1500, null, false);
     if (!data) return false;
     const b = await (await fetch(data)).blob();
     download(b, `${app.server.name}-3d.png`);

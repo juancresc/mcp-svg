@@ -92,6 +92,11 @@ DEFAULT_MATERIAL = {
 MATERIAL_NUMBERS = ("thickness", "sheet_width", "sheet_height", "tool_diameter")
 
 
+def clean_title(t) -> str:
+    """Project name: one line of plain text (may be empty = use the file name)."""
+    return " ".join(str(t).split())[:120] if isinstance(t, str) else ""
+
+
 def clean_material(m: dict | None, base: dict | None = None) -> dict:
     out = dict(base or DEFAULT_MATERIAL)
     for k, v in (m or {}).items():
@@ -216,6 +221,7 @@ class Document:
     groups: list[Group] = field(default_factory=list)
     params: list[dict] = field(default_factory=list)   # 3D preview sliders, e.g. desk height
     material: dict = field(default_factory=lambda: dict(DEFAULT_MATERIAL))
+    title: str = ""                         # project name, independent of the file name
 
     # ── lookup ─────────────────────────────────────────────
     def layer(self, name: str) -> Layer:
@@ -458,6 +464,7 @@ class Document:
             "groups": [asdict(g) for g in self.groups],
             "params": self.params,
             "material": self.material,
+            "title": self.title,
         }
 
     @classmethod
@@ -470,7 +477,8 @@ class Document:
                   elements=[Element(**{k: v for k, v in e.items() if k in el_keys}) for e in d["elements"]],
                   background=d.get("background"), next_id=d.get("next_id", 1),
                   groups=[Group(**{k: v for k, v in g.items() if k in group_keys}) for g in d.get("groups", [])],
-                  params=d.get("params", []), material=clean_material(d.get("material")))
+                  params=d.get("params", []), material=clean_material(d.get("material")),
+                  title=clean_title(d.get("title")))
         doc.sanitize()
         doc._fix_next_id()
         return doc
@@ -566,7 +574,7 @@ class Document:
         out = ["".join(head)]
         if mode == "file":
             meta = json.dumps({"groups": [asdict(g) for g in self.groups], "params": self.params,
-                               "material": self.material})
+                               "material": self.material, "title": self.title})
             out.append(f'  <metadata id="kerf" data-kerf={quoteattr(meta)}/>')
         if mode == "file" and self.background:
             out.append(f'  <image data-role="background" x="0" y="0" width="{w}" height="{h}" '
@@ -659,6 +667,8 @@ class Document:
                     doc.params = clean_params(data["params"])
                 if not base and isinstance(data.get("material"), dict):
                     doc.material = clean_material(data["material"])
+                if not base:
+                    doc.title = clean_title(data.get("title"))
             except (ValueError, TypeError) as e:
                 raise DocError(f"Invalid entity metadata: {e}")
 

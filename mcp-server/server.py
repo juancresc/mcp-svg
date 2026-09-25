@@ -83,7 +83,7 @@ def ids_arg(value: str) -> list[str]:
 def summary() -> dict:
     s = store.state(include_doc=False)
     d = store.doc
-    return {"tab": s["active"], "file": s["file"], "name": s["name"], "dirty": s["dirty"],
+    return {"tab": s["active"], "file": s["file"], "name": s["name"], "title": d.title, "dirty": s["dirty"],
             "width_mm": d.width, "height_mm": d.height, "elements": len(d.elements),
             "entities": len(d.groups), "layers": [l.name for l in d.layers], "material": d.material,
             "can_undo": s["can_undo"], "can_redo": s["can_redo"], "open_tabs": store.list_tabs()}
@@ -93,7 +93,7 @@ def summary() -> dict:
 
 @tool
 def get_document_info() -> str:
-    """Current document: file name, unsaved changes, size in mm (1 unit = 1 mm), layer names,
+    """Current document: project name (title) and file name, unsaved changes, size in mm (1 unit = 1 mm), layer names,
     element count, undo/redo availability."""
     return json.dumps(summary())
 
@@ -190,6 +190,18 @@ def export_svg(file: str = "") -> str:
     """Write the whole document as SVG (all layers, mm units, entities kept as metadata) to
     data/exports/ — for Inkscape or other software. Returns the path."""
     return json.dumps({"exported": store.export_svg(file or None)})
+
+
+@tool
+def set_project_name(name: str) -> str:
+    """Name the project (shown on its tab, saved in the file). Independent of the file name:
+    renaming does not move or rename the file. Empty = show the file name again.
+
+    Args:
+        name: The project name, e.g. "Standing desk v4".
+    """
+    store.apply([{"op": "set_title", "title": name}])
+    return json.dumps(summary())
 
 
 @tool
@@ -618,7 +630,7 @@ def apply_ops(ops: str, label: str = "") -> str:
     remove_elements{ids} · reorder_element{id,where} · group{items,name,parent} · ungroup{id} ·
     update_group{id,name,qty,assembly} · add_layer{name,color,line_style,export,description,depth} ·
     update_layer{name,...} · remove_layer{name,move_to} · set_size{width,height} ·
-    set_material{material} · set_params{params} · import_svg{svg,layer} · clear.
+    set_material{material} · set_title{title} · set_params{params} · import_svg{svg,layer} · clear.
     Example — a plate with a hole, grouped, in one step:
     [{"op":"add_element","tag":"rect","layer":"CUT_OUTSIDE","attrs":{"x":0,"y":0,"width":100,"height":50}},
      {"op":"add_element","tag":"circle","layer":"CUT_INSIDE","attrs":{"cx":20,"cy":25,"r":4}},

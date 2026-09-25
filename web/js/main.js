@@ -9,6 +9,7 @@ import { renderLayers, refreshInspector, renderEntities } from './panels.js';
 import { updateToolbar } from './menu.js';
 import { renderTabs } from './tabs.js';
 import * as preview3d from './preview3d.js';
+import * as actions from './actions.js';
 
 const titleEl = document.getElementById('doc-title');
 const conn = document.getElementById('conn');
@@ -78,7 +79,7 @@ on('view-mode', () => {
   document.getElementById('tools').classList.toggle('disabled', is3d);
   updateToolbar();
   if (is3d) preview3d.show();
-  else requestAnimationFrame(canvas.drawRulers);
+  else requestAnimationFrame(canvas.onShown);
 });
 
 // ── Collapsible side panel and sections ────────────────────
@@ -92,6 +93,20 @@ function applySide() {
   updateToolbar();
   requestAnimationFrame(canvas.drawRulers);
 }
+// Edit links in the 3D panel
+document.addEventListener('rename-project', () => actions.renameProject());
+document.addEventListener('material-dialog', () => actions.materialDialog());
+document.addEventListener('edit-sliders', () => {
+  if (app.sideHidden) document.dispatchEvent(new Event('toggle-side'));
+  setSelection([]);                      // the Inspector shows the document (with its sliders)
+  setTimeout(() => {
+    const sec = document.querySelector('#inspector .params-edit');
+    if (!sec) return;
+    if (collapsed.delete('inspector-panel')) applySide();
+    sec.previousElementSibling?.scrollIntoView({ block: 'start', behavior: 'smooth' });
+    sec.classList.add('flash');
+  }, 150);
+});
 document.addEventListener('toggle-side', () => {
   app.sideHidden = !app.sideHidden;
   savePref('sideHidden', app.sideHidden);
@@ -165,6 +180,7 @@ async function refreshCode(force = false) {
   const resp = await fetch('/api/export/file');
   code.value = await resp.text();
   codeDirty = false;
+  highlightCode(true);
   codeMsg.textContent = 'Edit the SVG and press Apply (one undo step).';
 }
 
@@ -175,7 +191,40 @@ document.addEventListener('toggle-code', () => {
   refreshCode(true);
   requestAnimationFrame(canvas.drawRulers);
 });
-code.addEventListener('input', () => { codeDirty = true; codeMsg.textContent = 'Unapplied changes'; });
+code.addEventListener('input', () => { codeDirty = true; codeMsg.textContent = 'Unapplied changes'; highlightCode(); });
+code.addEventListener('scroll', () => { codeHl.scrollTop = code.scrollTop; codeHl.scrollLeft = code.scrollLeft; });
+
+// Mark the selected elements' tags in the code (a mirror <pre> behind the transparent textarea)
+const codeHl = document.getElementById('code-hl');
+const escText = (s) => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+function highlightCode(reveal = false) {
+  if (!app.codeOpen) return;
+  const text = code.value;
+  const ranges = [];
+  for (const id of app.selection) {
+    const at = text.indexOf(` id="${id}"`);
+    if (at < 0) continue;
+    const start = text.lastIndexOf('<', at);
+    const end = text.indexOf('>', at) + 1;
+    if (start >= 0 && end > 0) ranges.push([start, end]);
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  let html = '', pos = 0;
+  for (const [a, b] of ranges) {
+    if (a < pos) continue;
+    html += escText(text.slice(pos, a)) + '<mark>' + escText(text.slice(a, b)) + '</mark>';
+    pos = b;
+  }
+  codeHl.innerHTML = html + escText(text.slice(pos)) + '\n';
+  codeHl.scrollTop = code.scrollTop; codeHl.scrollLeft = code.scrollLeft;
+  if (reveal && ranges.length) {
+    const mark = codeHl.querySelector('mark');
+    code.scrollTop = Math.max(0, mark.offsetTop - code.clientHeight / 3);
+    code.scrollLeft = 0;
+    codeHl.scrollTop = code.scrollTop; codeHl.scrollLeft = 0;
+  }
+}
+on('selection', () => highlightCode(true));
 document.getElementById('code-reload').addEventListener('click', () => refreshCode(true));
 document.getElementById('code-apply').addEventListener('click', async () => {
   const s = await api.ops([{ op: 'replace_svg', svg: code.value }], 'Edit code');

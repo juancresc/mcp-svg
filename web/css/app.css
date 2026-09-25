@@ -253,10 +253,15 @@ main { display: flex; flex: 1; min-height: 0; }
 /* ─── Code panel ─── */
 
 .code-panel { flex-shrink: 0; background: #1e1e1e; border-top: 1px solid #111; display: flex; flex-direction: column; }
-.code-panel textarea {
-  height: 220px; resize: vertical; border: 0; outline: 0; padding: 10px 12px;
-  background: #1e1e1e; color: #d4d4d4; font: 12px var(--mono);
+.code-wrap { position: relative; background: #1e1e1e; }
+.code-panel textarea, .code-hl {
+  height: 220px; border: 0; outline: 0; padding: 10px 12px; margin: 0;
+  font: 12px/1.5 var(--mono); white-space: pre; overflow: auto; box-sizing: border-box;
 }
+.code-panel textarea { position: relative; width: 100%; display: block; resize: vertical; background: transparent; color: #d4d4d4; }
+/* Mirror behind the textarea: same text, invisible, with the selected elements marked */
+.code-hl { position: absolute; inset: 0; height: auto; color: transparent; pointer-events: none; overflow: hidden; }
+.code-hl mark { background: rgba(74, 144, 226, .35); color: transparent; border-radius: 2px; }
 .code-bar { display: flex; align-items: center; gap: 8px; padding: 5px 10px; background: #252526; }
 .code-bar .muted { color: #999; font-size: 11px; }
 
@@ -314,13 +319,15 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
   background: #3a3a3a; border-bottom: 1px solid #111; flex-shrink: 0; overflow-x: auto;
 }
 .tab {
-  display: flex; align-items: center; gap: 6px; height: 27px; max-width: 220px; padding: 0 6px 0 12px;
+  display: flex; align-items: center; gap: 6px; height: 27px; width: 230px; flex-shrink: 0; padding: 0 6px 0 12px;
   border-radius: 6px 6px 0 0; background: #4a4a4a; color: #ccc; font-size: 12px; cursor: pointer;
   border: 1px solid transparent; border-bottom: 0; white-space: nowrap; user-select: none;
 }
 .tab:hover { background: #555; }
 .tab.active { background: var(--bg); color: var(--text); border-color: #111; }
-.tab .tab-name { overflow: hidden; text-overflow: ellipsis; }
+/* Fixed-width tabs: the name is cut, the 2D|3D switch and × always stay visible */
+.tab .tab-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.tab > :not(.tab-name) { flex-shrink: 0; }
 .tab .tab-dirty { color: #f5a524; font-size: 10px; }
 .tab .tab-kind { font-size: 10px; opacity: .7; }
 .tab .tab-close {
@@ -390,6 +397,12 @@ dialog::backdrop { background: rgba(0,0,0,.35); }
 .view3d-panel input[type=range] { width: 100%; }
 .view3d-panel .row { display: flex; gap: 6px; margin-top: 8px; flex-wrap: wrap; }
 .view3d-panel .note { color: var(--muted); line-height: 1.4; margin-top: 6px; }
+.view3d-panel .p3-head, .view3d-panel .p3-line { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+.link-btn { border: 0; background: none; padding: 0; color: var(--accent, #2d6cdf); cursor: pointer; font: inherit; font-size: 11px;
+  text-transform: none; letter-spacing: 0; white-space: nowrap; }
+.link-btn:hover { text-decoration: underline; }
+.flash { animation: flash 1.2s ease-out; }
+@keyframes flash { from { background: rgba(74, 144, 226, .3); } to { background: transparent; } }
 
 /* ─── File browser ─── */
 

@@ -333,6 +333,7 @@ function renderDocumentInfo() {
   const active = doc.layers.find(l => l.name === app.activeLayer);
   inspector.innerHTML = `<h2>Document</h2>
     <div class="kv" style="margin-top:8px">
+      <label>Project</label><input type="text" data-title value="${esc(s.tabs.find(t => t.id === s.active)?.title || '')}" placeholder="${esc(s.name)}" title="Project name: shown on the tab and saved in the file. The file name doesn't change.">
       <label>File</label><span class="val">${s.file ? esc(s.file) : '<span class="muted">not saved yet</span>'}${s.dirty ? ' •' : ''}</span>
       <label>Size</label><span class="val">${fmt(doc.width)} × ${fmt(doc.height)} mm</span>
       <label>Elements</label><span class="val">${doc.elements.length}</span>
@@ -372,6 +373,8 @@ function renderDocumentInfo() {
     <h3>Tips</h3>
     <p class="hint">Click a shape to select it. Drag on empty space to box-select: left→right selects shapes fully inside, right→left selects anything touched. Shift adds. Arrows nudge (Shift ×10). Space-drag pans, ⌘-scroll zooms.</p>`;
   inspector.querySelector('[data-doc-size]').addEventListener('click', actions.documentSize);
+  inspector.querySelector('[data-title]').addEventListener('change', (e) =>
+    api.ops([{ op: 'set_title', title: e.target.value.trim() }], 'Rename project'));
   inspector.querySelector('[data-fit]').addEventListener('click', canvas.zoomFit);
   const setMat = (fields, label = 'Material') => api.ops([{ op: 'set_material', material: fields }], label);
   const setParams = (params, label = '3D sliders') => api.ops([{ op: 'set_params', params }], label);

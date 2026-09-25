@@ -32,6 +32,7 @@ const MENUS = [
     ['DXF as new document…', () => actions.importDxf(false)],
     ['DXF into this document…', () => actions.importDxf(true)],
     '-',
+    ['Rename project…', actions.renameProject],
     ['Material & stock…', actions.materialDialog],
     ['Document size…', actions.documentSize],
     '-',

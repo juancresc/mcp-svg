@@ -13,7 +13,7 @@ export function renderTabs() {
   const html = s.tabs.map(t => {
     const active = t.id === s.active;
     const view = app.tabViews[t.id] || '2d';
-    return `<div class="tab ${active ? 'active' : ''}" data-tab="${esc(t.id)}" title="${esc(t.file || t.local_name || 'Not saved yet')}">
+    return `<div class="tab ${active ? 'active' : ''}" data-tab="${esc(t.id)}" title="${esc(t.name)}\n${esc(t.file || t.local_name || 'Not saved yet')}${active ? '\nDouble-click the name to rename the project' : ''}">
       <span class="tab-name">${esc(t.name)}</span>${t.dirty ? '<span class="tab-dirty" title="Unsaved changes">●</span>' : ''}
       ${active ? `<span class="tab-views" role="tablist">
           <button class="${view === '2d' ? 'on' : ''}" data-view="2d" title="Drawing (2D)">2D</button><button
@@ -33,6 +33,10 @@ bar.addEventListener('click', (e) => {
   if (!tab) return;
   const view = e.target.closest('[data-view]')?.dataset.view;
   actions.switchTab(tab.dataset.tab, view);
+});
+bar.addEventListener('dblclick', (e) => {  // double-click the active tab's name to rename the project
+  const tab = e.target.closest('.tab.active');
+  if (tab && e.target.closest('.tab-name')) actions.renameProject();
 });
 bar.addEventListener('auxclick', (e) => {   // middle-click closes, like browsers
   const tab = e.target.closest('[data-tab]');

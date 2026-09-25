@@ -17,7 +17,7 @@ import threading
 import time
 from pathlib import Path
 
-from document import Document, DocError, to_native, from_native, clean_material
+from document import Document, DocError, to_native, from_native, clean_material, clean_title
 
 NATIVE_EXT = ".kerf"
 LEGACY_EXT = ".svgcnc"      # early name of the project format; still opens
@@ -45,6 +45,8 @@ class Tab:
 
     @property
     def name(self) -> str:
+        if self.doc.title:
+            return self.doc.title
         if self.file:
             return Path(self.file).stem
         return Path(self.local_name or self.suggested_name or "Untitled").stem
@@ -57,7 +59,7 @@ class Tab:
         return not self.file and not self.dirty and not self.doc.elements and not self.undo_stack
 
     def summary(self) -> dict:
-        return {"id": self.id, "name": self.name, "file": self.file, "dirty": self.dirty,
+        return {"id": self.id, "name": self.name, "title": self.doc.title, "file": self.file, "dirty": self.dirty,
                 "local_name": self.local_name}
 
     def to_session(self) -> dict:
@@ -592,6 +594,9 @@ def apply_op(doc: Document, op: dict):
         return doc.ungroup(op["id"])
     if kind == "update_group":
         return doc.update_group(op["id"], op.get("name"), op.get("qty"), op.get("assembly", ...)).id
+    if kind == "set_title":
+        doc.title = clean_title(op.get("title"))
+        return None
     if kind == "set_material":
         doc.material = clean_material(op.get("material"), doc.material)
         return None
@@ -624,7 +629,7 @@ def describe(ops: list[dict]) -> str:
              "set_background": "Background", "set_background_opacity": "Background opacity",
              "clear": "Clear", "replace_svg": "Edit code", "import_svg": "Import SVG",
              "group": "Group", "ungroup": "Ungroup", "update_group": "Edit entity", "set_params": "Parameters",
-             "set_material": "Material"}
+             "set_material": "Material", "set_title": "Rename project"}
     kinds = {op.get("op") for op in ops}
     if len(kinds) == 1:
         k = kinds.pop()

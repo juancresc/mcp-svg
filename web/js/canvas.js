@@ -229,6 +229,7 @@ function applyGrid() {
 }
 
 export function setZoom(z, clientX, clientY) {
+  if (!wrap.clientWidth) return;              // hidden (3D view): keep the current zoom
   const r = wrap.getBoundingClientRect();
   if (clientX == null) { clientX = r.left + wrap.clientWidth / 2; clientY = r.top + wrap.clientHeight / 2; }
   const before = toDoc(clientX, clientY);
@@ -245,10 +246,20 @@ export const zoomIn = () => setZoom(app.zoom * 1.25);
 export const zoomOut = () => setZoom(app.zoom / 1.25);
 export const zoom100 = () => setZoom(1);
 
+let fitPending = false;
 export function zoomFit() {
   const d = app.doc;
   if (!d) return;
+  // The 2D view is hidden (3D showing): fit when it becomes visible, not now (it measures 0 px)
+  if (!wrap.clientWidth || !wrap.clientHeight) { fitPending = true; return; }
+  fitPending = false;
   setZoom(Math.min((wrap.clientWidth - 80) / d.width, (wrap.clientHeight - 80) / d.height));
+}
+
+/** Called when the 2D view becomes visible again. */
+export function onShown() {
+  if (fitPending) zoomFit();
+  drawRulers();
 }
 
 export function zoomToSelection() {
