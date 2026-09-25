@@ -32,10 +32,33 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", APP_DIR / "data"))
 HTTP_PORT = int(os.environ.get("HTTP_PORT", "8765"))
 MCP_PORT = int(os.environ.get("MCP_PORT", "8766"))
 
+# ── Deployment (all optional; defaults = this machine only, no token) ──
+# KERF_PUBLIC_URL  where people open the editor, e.g. https://kerf.example.com
+# KERF_MCP_URL     the public MCP SSE URL, e.g. https://kerf.example.com:8766/sse
+#                  (default: the editor's host on MCP_PORT, path /sse)
+# KERF_TOKEN       shared secret; required as soon as the server is reachable from other hosts
+# KERF_ALLOWED_HOSTS extra host names to accept, comma-separated
+PUBLIC_URL = os.environ.get("KERF_PUBLIC_URL", "").strip().rstrip("/")
+MCP_PUBLIC_URL = os.environ.get("KERF_MCP_URL", "").strip().rstrip("/")
+TOKEN = os.environ.get("KERF_TOKEN", "").strip()
+
+
+def _hostname(url: str) -> str:
+    from urllib.parse import urlsplit
+    return (urlsplit(url).hostname or "") if url else ""
+
+
+PUBLIC_HOSTS = {h for h in [_hostname(PUBLIC_URL), _hostname(MCP_PUBLIC_URL),
+                            *[x.strip() for x in os.environ.get("KERF_ALLOWED_HOSTS", "").split(",")]] if h}
+if PUBLIC_HOSTS and not TOKEN:
+    raise SystemExit("Kerf: KERF_TOKEN must be set when the server accepts public hosts "
+                     f"({', '.join(sorted(PUBLIC_HOSTS))}); anyone could otherwise edit and delete your files.")
+EDITOR_URL = PUBLIC_URL or f"http://localhost:{HTTP_PORT}"
+
 store = Store(DATA_DIR)
 # Changes on every start; lets the browser notice a restart and reload the state
 INSTANCE_ID = uuid.uuid4().hex
-INSTRUCTIONS = """Kerf — a CNC design editor shared with the user (they see every change live at http://localhost:8765).
+INSTRUCTIONS = f"""Kerf — a CNC design editor shared with the user (they see every change live at {EDITOR_URL}).
 - Units: 1 SVG unit = 1 mm. Stroke colour/line style come from the element's LAYER, never pass them.
 - Layers: CUT_OUTSIDE = part outlines, CUT_INSIDE = holes/slots/windows, ENGRAVE = partial depth,
   NOTES = labels/dimensions (never cut), HARDWARE = bought parts for the 3D preview (never cut).
@@ -49,8 +72,11 @@ try:
     from mcp.server.transport_security import TransportSecuritySettings
     _security = TransportSecuritySettings(
         enable_dns_rebinding_protection=True,
-        allowed_hosts=[f"localhost:{MCP_PORT}", f"127.0.0.1:{MCP_PORT}", "localhost", "127.0.0.1"],
-        allowed_origins=[f"http://localhost:{MCP_PORT}", f"http://127.0.0.1:{MCP_PORT}"])
+        allowed_hosts=[f"localhost:{MCP_PORT}", f"127.0.0.1:{MCP_PORT}", "localhost", "127.0.0.1",
+                       *PUBLIC_HOSTS, *[f"{h}:*" for h in PUBLIC_HOSTS]],
+        allowed_origins=[f"http://localhost:{MCP_PORT}", f"http://127.0.0.1:{MCP_PORT}",
+                         *[f"{scheme}://{h}" for h in PUBLIC_HOSTS for scheme in ("http", "https")],
+                         *[f"{scheme}://{h}:*" for h in PUBLIC_HOSTS for scheme in ("http", "https")]])
     mcp = FastMCP("kerf", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS, transport_security=_security)
 except ImportError:  # older mcp without transport security settings
     mcp = FastMCP("kerf", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS)
@@ -1032,23 +1058,68 @@ async def post_screenshot(request):
     return web.json_response({"status": "ok"})
 
 
+async def get_connect(request):
+    """Addresses (and the token, for signed-in users) for the editor's "Connect Claude" dialog."""
+    proto = request.headers.get("X-Forwarded-Proto") or request.scheme
+    host = request.headers.get("X-Forwarded-Host") or request.host
+    editor = PUBLIC_URL or f"{proto}://{host}"
+    from urllib.parse import urlsplit
+    base = urlsplit(PUBLIC_URL) if PUBLIC_URL else urlsplit(f"{proto}://{host}")
+    mcp_url = MCP_PUBLIC_URL or f"{base.scheme}://{base.hostname or 'localhost'}:{MCP_PORT}/sse"
+    return web.json_response({"editor_url": editor, "api_url": f"{editor}/api", "mcp_url": mcp_url,
+                              "token": TOKEN or None})
+
+
 async def index(request):
     return web.FileResponse(WEB_DIR / "index.html", headers={"Cache-Control": "no-cache"})
 
 
 LOCAL_HOSTS = {"localhost", "127.0.0.1", "[::1]"}
+ALLOWED_HOSTS = LOCAL_HOSTS | PUBLIC_HOSTS
+TOKEN_COOKIE = "kerf_token"
+
+
+def token_ok(request) -> bool:
+    """No token configured, or the request carries it (Authorization: Bearer … or the login cookie)."""
+    if not TOKEN:
+        return True
+    import hmac
+    auth = request.headers.get("Authorization", "")
+    given = auth[7:].strip() if auth.lower().startswith("bearer ") else request.cookies.get(TOKEN_COOKIE, "")
+    return hmac.compare_digest(given.encode(), TOKEN.encode())
+
+
+LOGIN_PAGE = """<!doctype html><meta charset="utf-8"><title>Kerf — sign in</title>
+<style>body{font:14px system-ui,sans-serif;display:grid;place-items:center;height:100vh;margin:0;background:#f4f4f5}
+form{background:#fff;padding:24px;border-radius:10px;box-shadow:0 4px 20px #0001;display:grid;gap:10px;width:300px}
+input,button{font:inherit;padding:8px;border-radius:6px;border:1px solid #ccc}button{background:#2d6cdf;color:#fff;border:0}</style>
+<form method="get" action="/"><b>Kerf</b><label>Access token<br><input name="token" type="password" autofocus style="width:100%;box-sizing:border-box"></label>
+<button>Open editor</button></form>"""
 
 
 @web.middleware
 async def local_only(request, handler):
-    """The API edits and deletes files: only serve this machine's browser. Blocks DNS rebinding
-    (Host check) and cross-site form posts (Origin + JSON content type)."""
+    """The API edits and deletes files. Serves this machine (and KERF_PUBLIC_URL's host when
+    deployed, then with KERF_TOKEN). Blocks DNS rebinding (Host check), cross-site form posts
+    (Origin + JSON content type) and, with a token, anyone without it."""
     host = (request.host or "").rsplit(":", 1)[0]
-    if host not in LOCAL_HOSTS:
+    if host not in ALLOWED_HOSTS:
         return web.json_response({"error": "Forbidden host"}, status=403)
+    if TOKEN and request.path == "/" and request.query.get("token"):
+        # Sign in: /?token=… sets an HttpOnly cookie, then drops the token from the address bar
+        resp = web.HTTPFound("/")
+        secure = request.secure or request.headers.get("X-Forwarded-Proto") == "https" or PUBLIC_URL.startswith("https")
+        resp.set_cookie(TOKEN_COOKIE, request.query["token"], httponly=True, samesite="Strict", secure=secure,
+                        max_age=60 * 60 * 24 * 90)
+        return resp
+    if not token_ok(request):
+        if request.path.startswith("/api/"):
+            return web.json_response({"error": "Missing or wrong token (Authorization: Bearer <KERF_TOKEN>)"}, status=401)
+        if request.path in ("/", "/index.html"):
+            return web.Response(text=LOGIN_PAGE, content_type="text/html")
     if request.method == "POST":
         origin = request.headers.get("Origin")
-        if origin and origin.split("://", 1)[-1].rsplit(":", 1)[0] not in LOCAL_HOSTS:
+        if origin and origin.split("://", 1)[-1].rsplit(":", 1)[0] not in ALLOWED_HOSTS:
             return web.json_response({"error": "Forbidden origin"}, status=403)
         if request.content_type != "application/json":
             return web.json_response({"error": "Content-Type must be application/json"}, status=415)
@@ -1087,6 +1158,7 @@ def run_http_server():
     r.add_get("/api/background", get_background)
     r.add_get("/api/export/{kind}", get_export)
     r.add_post("/api/screenshot", post_screenshot)
+    r.add_get("/api/connect", get_connect)
     r.add_static("/", WEB_DIR)
 
     loop = asyncio.new_event_loop()
@@ -1100,5 +1172,24 @@ def run_http_server():
 
 if __name__ == "__main__":
     threading.Thread(target=run_http_server, daemon=True).start()
-    log.info(f"MCP server (SSE) on port {MCP_PORT}")
-    mcp.run(transport="sse")
+    log.info(f"MCP server (SSE) on port {MCP_PORT}{' (token required)' if TOKEN else ''}")
+    if not TOKEN:
+        mcp.run(transport="sse")
+    else:
+        import hmac
+        import uvicorn
+        sse = mcp.sse_app()
+
+        async def require_token(scope, receive, send):
+            """MCP clients must send Authorization: Bearer <KERF_TOKEN>."""
+            if scope["type"] == "http":
+                auth = dict(scope.get("headers") or []).get(b"authorization", b"").decode()
+                given = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+                if not hmac.compare_digest(given.encode(), TOKEN.encode()):
+                    await send({"type": "http.response.start", "status": 401,
+                                "headers": [(b"content-type", b"application/json")]})
+                    await send({"type": "http.response.body", "body": b'{"error": "Missing or wrong token"}'})
+                    return
+            await sse(scope, receive, send)
+
+        uvicorn.run(require_token, host="0.0.0.0", port=MCP_PORT, log_level="warning")

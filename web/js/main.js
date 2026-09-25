@@ -10,6 +10,7 @@ import { updateToolbar } from './menu.js';
 import { renderTabs } from './tabs.js';
 import * as preview3d from './preview3d.js';
 import * as actions from './actions.js';
+import { connectDialog } from './connect.js';
 
 const titleEl = document.getElementById('doc-title');
 const conn = document.getElementById('conn');
@@ -113,6 +114,8 @@ resizer.addEventListener('pointerdown', (e) => {
 });
 resizer.addEventListener('dblclick', () => { setSideW(320); try { localStorage.removeItem('kerf.sideW'); } catch (_) {} canvas.drawRulers(); });
 
+document.getElementById('connect-claude').addEventListener('click', connectDialog);
+
 // Edit links in the 3D panel
 document.addEventListener('rename-project', () => actions.renameProject());
 document.addEventListener('material-dialog', () => actions.materialDialog());
@@ -151,7 +154,10 @@ on('connection', () => {
 
 function updateTitle() {
   const s = app.server;
-  titleEl.innerHTML = `${esc(s.file || 'Untitled')}${s.dirty ? ' <span class="dirty" title="Unsaved changes">● edited</span>' : ''}`;
+  // Project name first; the file (or "not saved") after it, dimmer
+  const where = s.file || s.tabs?.find(t => t.id === s.active)?.local_name || 'not saved';
+  titleEl.innerHTML = `${esc(s.name || 'Untitled')}${where !== s.name ? ` <span class="file">— ${esc(where)}</span>` : ''}` +
+    `${s.dirty ? ' <span class="dirty" title="Unsaved changes">● edited</span>' : ''}`;
   document.title = `${s.dirty ? '• ' : ''}${s.name} — Kerf`;
 }
 

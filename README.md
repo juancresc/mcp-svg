@@ -32,6 +32,35 @@ Ask it to build something
 Draw a 400 × 300 mm box lid in 6 mm MDF with four 8 mm holes 20 mm from the corners, group it and show it in 3D
 ```
 
+## Connect Claude
+
+In the editor, click **Connect Claude** (top right, or Help → Connect Claude). It shows copy-paste setups built from the editor's own address:
+- **Claude Code:** a one-line `claude mcp add …` command.
+- **`.mcp.json`:** a project config file.
+- **Claude Desktop:** a config using `mcp-remote`.
+- **Prompt (curl, no MCP):** a text you paste into Claude that explains the HTTP API with curl examples.
+
+Each has a Copy button.
+
+## Deploying (reachable from other machines)
+
+By default Kerf only answers on this computer. To put it on a server, set these in `docker-compose.yml` → `environment`, and publish the ports (or put a reverse proxy in front):
+
+```yaml
+    ports:
+      - "8765:8765"   # editor + HTTP API
+      - "8766:8766"   # MCP (SSE)
+    environment:
+      - KERF_PUBLIC_URL=https://kerf.example.com          # where people open the editor
+      - KERF_MCP_URL=https://kerf.example.com:8766/sse    # optional; default: same host, port 8766
+      - KERF_TOKEN=change-me-to-a-long-random-string      # required once KERF_PUBLIC_URL is set
+```
+
+- **Browser:** open `https://kerf.example.com/?token=…` once. That sets a login cookie; without it the editor shows a sign-in page.
+- **API and MCP clients:** send `Authorization: Bearer <KERF_TOKEN>`. The Connect Claude snippets already include it.
+- **Refuses to start without a token:** the server exits if `KERF_PUBLIC_URL` is set but `KERF_TOKEN` isn't, because anyone could otherwise edit and delete your files.
+- **Use HTTPS** (e.g. a Caddy or nginx proxy). Otherwise the token travels in plain text.
+
 ## Workflow: how drawings get made
 
 There are three ways to build a design. They share one server-side document, so every change shows up live in the browser.
