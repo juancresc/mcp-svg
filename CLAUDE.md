@@ -33,15 +33,20 @@ mcp-server/
                assembly), params, material. SVG read/write ("file" / "cnc"), .kerf (to/from_native).
   store.py     Store: open documents as Tabs (file, dirty fingerprint, undo/redo, selection),
                apply(ops) = one atomic undo step, files in data/, session autosave, screenshots.
+  layout.py    parts on the drawing: reposition() (move/transform keeping assembly matrices in sync),
+               default_matrix, pieces(), arrange() (MaxRects onto SHEETS), layout_issues (overlap, too
+               close, off sheet), assembly_report (world boxes, clashes by sampling part solids).
   export.py    SVG geometry → DXF (ezdxf; LWPOLYLINE with arc bulges, CIRCLE), DXF → SVG import,
                per-entity part files + zip (nesting software), bounding boxes.
   server.py    MCP tools + HTTP API (aiohttp) — thin wrappers over Store.
-  kerf_script.py  stdlib-only helpers for parametric generator scripts (HTTP calls, outlines with
-               fillets/dog-bones/arcs, place() → drawing mapping + assembly matrix, world_box);
+  kerf_script.py  stdlib-only helpers for parametric generator scripts: Drawing (whole project as one
+               batch: parts, 3D placement, expect() world-box checks, arrange, run() CLI), HTTP calls,
+               outlines with fillets/dog-bones/arcs, place() → drawing mapping + matrix, world_box;
                served at GET /api/script so remote Claude sessions can use it. Local generators import it.
   guide.md     the design guide (get_guide, /api/guide); its Parametric scripts example is run by tests.
   tests/       pytest: test_store.py (model/store/exports), test_tools.py (MCP tools),
-               test_script.py (kerf_script + the guide example)
+               test_script.py (kerf_script + the guide example), test_layout.py (moves keep 3D,
+               named refs, arrange, layout checks, clashes)
 web/js/
   state.js     client state, event bus, entity helpers (itemAt, descendants, selectItems, context)
   api.js       HTTP client; mutations serialized; long-poll sync; background image cache
@@ -66,7 +71,10 @@ data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (
 - **Everything loaded is validated** (`Document.sanitize`, used by `.kerf`, sessions and SVG import): layer names/colours/line styles/depths, element ids/tags/attributes, entity ids/parents/assemblies (`clean_assembly`), parameters (`clean_params`). Keep new fields going through it — file data reaches the UI.
 - **Entities** (groups) may span layers, so a part is its outline plus its holes. They nest through `parent`; the UI enters them with double-click, and Esc goes up. `qty` is used for part exports.
 - **`assembly`** (per entity) places the part in 3D:
-  - `matrix [a,b,c,d,e,f]` maps doc 2D → part-local 2D (y up).
+  - `matrix [a,b,c,d,e,f]` maps doc 2D → part-local 2D (y up). Omitted in update_group: kept, or for a new
+    placement the drawing's bottom-left corner (`"auto"` recomputes). The `move`/`transform`/`arrange` ops
+    compose it with the inverse move, so moving a part on the sheet never moves it in 3D. The browser's
+    drag and nudge use the `move` op for that reason; don't move parts with raw update_element.
   - `thickness` is the extrusion along local +Z; the top face at z = thickness is the router face, where pockets are cut.
   - `rotation` is in degrees (Euler XYZ); `position` is in world mm (X width, Y up, Z toward the viewer).
   - optional `color`, and `move: {param, axis}` tied to a doc `params` slider.
@@ -75,11 +83,12 @@ data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (
 - `material` holds name, type, thickness, colour, sheet size, tool Ø and notes. It supplies the default thickness and colour in 3D.
 
 ### Store / sync
-- All edits go through `Store.apply(ops)`: the browser always names its tab, and MCP tools use the active tab. Within a batch, `"$n"` in items/id/ids/group/parent refers to the result of op n, so a whole part (shapes + group) is one undo step. Ops:
+- All edits go through `Store.apply(ops)`: the browser always names its tab, and MCP tools use the active tab. Within a batch, `"$n"` in items/id/ids/group/parent refers to the result of op n, and `"$name"` to the op with `"as": "name"`, so a whole part (shapes + group) is one undo step. Errors say which op failed. Ops:
   - elements: `add_element, update_element, remove_elements, reorder_element`;
   - layers: `add_layer, update_layer, set_layer_visibility, remove_layer, move_layer`;
   - document: `set_size, set_background(_opacity), clear, replace_svg, import_svg, set_material, set_params`;
   - entities: `group, ungroup, update_group, set_group` (move items into an entity or out of it);
+  - layout: `move {items,dx,dy}`, `transform {items,transform}`, `arrange {sheet_width,sheet_height,margin,gap,rotate,notes}`;
   - `set_title` (the project name).
 - Undo/redo and dirty tracking are per tab. Visibility is view state: not undoable, doesn't make the file dirty.
 - `dirty` means the content fingerprint differs from the last save/open. Rapid single-field edits coalesce into one undo step.
@@ -94,7 +103,7 @@ The compose file publishes both ports on 127.0.0.1 only. The `local_only` middle
 - **Editing:** `POST /api/ops {ops,label}` · `POST /api/undo|redo`.
 - **Files and tabs:** `POST /api/file/new|open|close|activate|revert|save|saved-local|mkdir|delete|import` (import takes `svg | dxf (base64) | project`) · `GET /api/files` · `GET /api/browse?folder=`.
 - **Exports:** `GET /api/export/{cnc|cnc-dxf|parts|file|project}`.
-- **Scripts:** `GET /api/script` (kerf_script.py) · `GET /api/check?tab=` (check_cnc for any tab). `add_layer` takes `exist_ok` (update instead of failing) so generators can re-run.
+- **Scripts:** `GET /api/script` (kerf_script.py) · `GET /api/check?tab=` (check_cnc for any tab) · `GET /api/assembly?tab=` (describe_assembly). `add_layer` takes `exist_ok` (update instead of failing) so generators can re-run.
 - **Other:** `POST /api/selection` · `POST /api/screenshot` · `GET /api/background` · `GET /api/guide`.
 
 ## MCP tools (server `kerf`, SSE on :8766)
@@ -104,19 +113,22 @@ The server also sends workflow instructions to the client (`INSTRUCTIONS` in ser
 - **Projects/tabs:** `get_document_info, list_documents, list_files, list_tabs, switch_tab, new_document, open_document, save_document, close_document, revert_document, set_project_name, set_canvas_size, set_material, undo, redo`
 - **Guide:** `get_guide(topic)`: workflow, layers, 3D placement recipes, CNC rules (also `GET /api/guide`, Help → Kerf guide). Keep `mcp-server/guide.md` up to date when conventions change.
 - **Elements:** `list_elements, add_element, add_svg` (many shapes at once, one undo step), `update_element, remove_element, set_element_layer, move_elements, transform_elements, duplicate, reorder, clear_document, get_svg`
-- **Entities/3D:** `list_groups, group_elements, ungroup, update_group` (name, qty, assembly), `move_to_entity`, `set_params`
+- **Entities/3D:** `list_groups, group_elements, ungroup, update_group` (name, qty, assembly), `move_to_entity`, `set_params`, `describe_assembly` (world boxes, clashes)
+- **Sheets:** `arrange_parts` (pack pieces onto sheets, SHEETS layer, notes block; 3D unchanged)
 - **Layers:** `list_layers, add_layer, update_layer, remove_layer, move_layer` (with `depth` for pockets)
 - **Measure/selection:** `measure, add_dimension, get_selection, set_selection`
 - **Import/export:** `import_dxf, export_cnc` (svg|dxf), `export_svg, export_parts`
-- **Power tools:** `apply_ops` (any ops, one call, one undo step, `$n` references), `find_elements` (by layer/tag/entity/area), `describe_entity` (bounds, hole sizes, layers), `check_cnc` (open contours, holes smaller than the tool, duplicates, text on cut layers, parts bigger than the sheet, …)
+- **Power tools:** `apply_ops` (any ops, one call, one undo step, `"as"`/`$name` references), `find_elements` (by layer/tag/entity/area), `describe_entity` (bounds, hole sizes, layers, world box), `check_cnc` (open contours, holes smaller than the tool, duplicates, text on cut layers, parts bigger than the sheet, overlapping/too close/off-sheet parts, warnings for parts not in 3D, …)
+- Tool arguments take real JSON (objects, id lists); JSON strings and comma-separated ids still work.
 - **Preview:** `take_screenshot(view="2d"|"3d"|"3d-exploded")` (async; needs the editor open in a browser), `set_background_image, remove_background_image`
 - **Prompts:** `design_part(description)`, `prepare_for_cutting`
 
 ### Working with MCP
 1. `get_document_info` / `list_tabs`. Never discard the user's unsaved work or close their tabs without asking.
 2. Use layers, not colours: outlines → CUT_OUTSIDE, holes/slots → CUT_INSIDE, pockets → a layer with `depth`, labels/dimensions → NOTES, bought parts → a non-export layer.
-3. Build each part with one `apply_ops` batch (shapes + `group` via `$n`, `fill="none"`), then `update_group` for `qty` and `assembly`, so part exports and the 3D preview work.
-4. `check_cnc`, then `take_screenshot` (2d and 3d). `save_document` writes the .kerf. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
+3. Build each part with one `apply_ops` batch (shapes + `group` via `"as"`/`$name`, `fill="none"`, then `update_group` with `qty` and `assembly {rotation, position}`), so part exports and the 3D preview work. Big or parametric designs: a kerf_script `Drawing` script.
+4. `arrange_parts` onto the sheets.
+5. `check_cnc` and `describe_assembly`, then `take_screenshot` (2d and 3d). `save_document` writes the .kerf. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
 
 ## SVG/DXF for CNC guidelines
 - 1 unit = 1 mm; exports carry mm units. Don't scale in CAM.

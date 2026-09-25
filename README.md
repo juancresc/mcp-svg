@@ -49,10 +49,11 @@ The `kerf` MCP server (SSE on port 8766) gives Claude the same editor you see. T
 - **Start here:** `get_guide` returns the design guide: workflow, layers, 3D placement recipes, CNC rules and parametric scripts. Ask for one section with `get_guide("placement")`, `"scripts"`, and so on.
 - **Projects and tabs:** `get_document_info`, `list_tabs`, `switch_tab`, `new_document`, `open_document`, `save_document`, `close_document`, `revert_document`, `set_project_name`, `set_canvas_size`, `set_material`, `undo`, `redo`, `list_files`.
 - **Shapes:** `add_svg` (many shapes, one undo step), `add_element`, `update_element`, `remove_element`, `move_elements`, `transform_elements`, `duplicate`, `set_element_layer`, `list_elements`, `find_elements`, `get_svg`.
-- **Parts (entities) and 3D:** `group_elements`, `ungroup`, `move_to_entity`, `update_group` (name, qty, 3D placement), `describe_entity`, `list_groups`, `set_params` (sliders).
+- **Parts (entities) and 3D:** `group_elements`, `ungroup`, `move_to_entity`, `update_group` (name, qty, 3D placement: `rotation` + `position`; the drawing→part matrix is automatic and follows the part when it's moved), `describe_entity`, `list_groups`, `set_params` (sliders).
+- **Sheets:** `arrange_parts` packs every part onto stock sheets (turning parts when that fits better), draws the sheets and a notes block, and keeps the 3D placement.
 - **Layers:** `add_layer` (with `depth` for pockets), `update_layer`, `remove_layer`, `move_layer`, `list_layers`.
-- **Batch edits:** `apply_ops` runs any list of ops as one undo step. `"$n"` refers to the id created by op n.
-- **Check and look:** `check_cnc` (open outlines, holes smaller than the tool, duplicates, parts bigger than the sheet…), `measure`, `add_dimension`, `take_screenshot("2d" | "3d" | "3d-exploded")`, `get_selection` / `set_selection` (what you selected, or highlight parts for you).
+- **Batch edits:** `apply_ops` runs any list of ops as one undo step. Name an op with `"as": "side"` and refer to its result as `"$side"` (`"$n"` = op n also works).
+- **Check and look:** `check_cnc` (open outlines, holes smaller than the tool, duplicates, parts bigger than the sheet, parts overlapping or too close, parts off the sheets…), `describe_assembly` (every part's 3D world box, parts clashing), `measure`, `add_dimension`, `take_screenshot("2d" | "3d" | "3d-exploded")`, `get_selection` / `set_selection` (what you selected, or highlight parts for you).
 - **Files for the shop:** `export_cnc` (SVG or DXF), `export_parts` (one file per part, for nesting), `export_svg`, `import_dxf`.
 - **Prompts:** `design_part`, `design_furniture`, `prepare_for_cutting`.
 
@@ -94,7 +95,8 @@ There are three ways to build a design. They share one server-side document, so 
 In practice: Claude writes and edits the generator, runs it, pushes the result, and checks it with `take_screenshot` (2D, 3D, exploded) through MCP.
 
 **Script helpers for generators.** `mcp-server/kerf_script.py` is served by the editor at `GET /api/script`, so Claude can fetch it even when Kerf runs on another machine. It is standard library only and handles:
-- the HTTP calls: posting ops to a named tab, opening a new tab without taking over the one you're looking at, saving, and `check` (the same checks as `check_cnc`, via `GET /api/check?tab=`);
+- `Drawing`: a whole project as one batch: parts drawn in their own coordinates with holes, pockets, labels and 3D placement, local world-box checks (`expect`), `arrange()` onto sheets with notes, and `run()` (new tab, or rebuild a tab in place; `--dry`, `--save`);
+- the HTTP calls: posting ops to a named tab, opening a new tab without taking over the one you're looking at, saving, `check` (the same checks as `check_cnc`, via `GET /api/check?tab=`) and `assembly_report` (`describe_assembly`, via `GET /api/assembly?tab=`);
 - outlines with fillets, dog-bones and arcs, with the SVG arc flags computed for you;
 - `place()`, which puts a part on the sheet (optionally turned) and returns the matching 3D matrix;
 - `world_box()`, to check where a part lands in 3D.
@@ -105,7 +107,7 @@ In practice: Claude writes and edits the generator, runs it, pushes the result, 
 
 - **Generators as a first-class feature:** a `run_generator` MCP tool and a *Parameters* panel. Changing a number (width, height, material thickness) would re-run the script and update the tab, keeping manual edits on separate layers.
 - Shapes → paths conversion and text → outlines for CAM.
-- Nesting inside the editor (today: export parts → Deepnest/SVGnest).
+- True-shape nesting (today `arrange_parts` packs bounding boxes; for tighter layouts: export parts → Deepnest/SVGnest).
 
 Tests
 ```

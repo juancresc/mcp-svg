@@ -11,8 +11,9 @@ Material: 18 mm birch plywood. Lay it out on full 2440 × 1220 sheets (or my CNC
 const MCP_PROMPT = (editor) => `You're connected to my Kerf CNC editor (MCP server "kerf"); I watch every change live at ${editor}
 First call get_guide and follow it (workflow, layers, 3D placement recipes, CNC rules).
 ${ASK}
-Ask me anything essential before drawing. Build one part per apply_ops batch, lay the parts out on sheets,
-check with check_cnc and take_screenshot (2d, 3d, 3d-exploded), then save_document and give me the link.`;
+Ask me anything essential before drawing. Build one part per apply_ops batch (or a kerf_script script for
+bigger designs), arrange_parts onto the sheets, check with check_cnc and describe_assembly, then take_screenshot
+(2d, 3d, 3d-exploded), save_document and give me the link.`;
 
 function snippets({ editor_url, api_url, mcp_url, token }) {
   const auth = token ? `Bearer ${token}` : null;
@@ -59,6 +60,10 @@ Ops: add_element{tag,attrs,layer,text?,group?} · update_element{id,attrs?,text?
   · group{items,name} · ungroup{id} · update_group{id,name?,qty?,assembly?} · add_layer{name,color,line_style?,export?,depth?}
   · update_layer{name,...} · set_size{width,height} · set_material{material} · set_title{title}
   · set_params{params} · import_svg{svg,layer?} · clear
+  · move{items,dx,dy} · transform{items,transform} · arrange{sheet_width?,sheet_height?,margin?,gap?,notes?}
+  Name an op with "as":"side" and use "$side" in later items/id/ids/group/parent. update_group's assembly
+  needs only {rotation, position}: the matrix is set from the drawing and follows moves/arranges.
+Checks:                 curl -s${curlAuth} ${api_url}/check  ·  ${api_url}/assembly   (3D world boxes, clashes)
 Undo / redo:            curl -s${curlAuth} -H 'Content-Type: application/json' -X POST ${api_url}/undo -d '{}'   (or /redo)
 New tab:                ... -X POST ${api_url}/file/new -d '{"width":800,"height":600}'
 Open / save (data dir): ... -X POST ${api_url}/file/open -d '{"file":"desk/desk.kerf"}'  ·  ${api_url}/file/save -d '{"file":"my-part"}'
