@@ -18,3 +18,6 @@
 - [ ] CNC export that converts shapes and text to paths.
 - [ ] Generators as a first-class feature (see README → Ideas).
 - [ ] Better app name than "Kerf" (too generic).
+- [ ] Saving depends on who you are (for the deployed version):
+  - not logged in: work only on the computer (open from / download to your machine; nothing is stored on the server);
+  - logged in: projects are saved on the server, in the user's own space (Open/Save As browse their files).
