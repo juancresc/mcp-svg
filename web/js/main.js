@@ -64,8 +64,8 @@ on('doc', () => {
 });
 
 // 3D preview tabs are a view, remembered per browser
-try { JSON.parse(localStorage.getItem('svgcnc.previewTabs') || '[]').forEach(t => app.previewTabs.add(t)); } catch (_) {}
-on('view-mode', () => localStorage.setItem('svgcnc.previewTabs', JSON.stringify([...app.previewTabs])));
+try { JSON.parse(localStorage.getItem('kerf.previewTabs') || '[]').forEach(t => app.previewTabs.add(t)); } catch (_) {}
+on('view-mode', () => localStorage.setItem('kerf.previewTabs', JSON.stringify([...app.previewTabs])));
 on('context', () => { updateStatus(); refreshInspector(); renderEntities(); });
 
 // ── 2D drawing ↔ 3D preview ────────────────────────────────
@@ -85,8 +85,8 @@ on('view-mode', () => {
 // ── Collapsible side panel and sections ────────────────────
 
 const side = document.querySelector('.side');
-app.sideHidden = !!JSON.parse(localStorage.getItem('svgcnc.sideHidden') || 'false');
-const collapsed = new Set(JSON.parse(localStorage.getItem('svgcnc.collapsed') || '[]'));
+app.sideHidden = !!JSON.parse(localStorage.getItem('kerf.sideHidden') || 'false');
+const collapsed = new Set(JSON.parse(localStorage.getItem('kerf.collapsed') || '[]'));
 function applySide() {
   side.hidden = app.sideHidden;
   for (const sec of side.querySelectorAll('.panel')) sec.classList.toggle('collapsed', collapsed.has(sec.id));
@@ -103,7 +103,7 @@ side.addEventListener('click', (e) => {
   if (!head || e.target.closest('button')) return;
   const sec = head.closest('.panel');
   collapsed.has(sec.id) ? collapsed.delete(sec.id) : collapsed.add(sec.id);
-  localStorage.setItem('svgcnc.collapsed', JSON.stringify([...collapsed]));
+  localStorage.setItem('kerf.collapsed', JSON.stringify([...collapsed]));
   applySide();
 });
 applySide();
@@ -118,7 +118,7 @@ on('connection', () => {
 function updateTitle() {
   const s = app.server;
   titleEl.innerHTML = `${esc(s.file || 'Untitled')}${s.dirty ? ' <span class="dirty" title="Unsaved changes">● edited</span>' : ''}`;
-  document.title = `${s.dirty ? '• ' : ''}${s.name} — SVG CNC`;
+  document.title = `${s.dirty ? '• ' : ''}${s.name} — Kerf`;
 }
 
 let selectionGeometry = null;
@@ -145,7 +145,8 @@ function updateStatus() {
     st('selection').textContent = `measure ${fmt(measureInfo.len)} mm · Δx ${fmt(Math.abs(measureInfo.dx))} · Δy ${fmt(Math.abs(measureInfo.dy))}` +
       (measureInfo.done ? '  —  Enter: add as dimension · Esc: clear' : '');
   } else {
-    st('selection').textContent = n ? `${n} selected${b ? ` · ${fmt(b.width)} × ${fmt(b.height)} mm at ${fmt(b.x)}, ${fmt(b.y)}` : ''}` :
+    const hasBox = b && (b.width || b.height);          // no geometry while the 2D canvas is hidden (3D view)
+    st('selection').textContent = n ? `${n} selected${hasBox ? ` · ${fmt(b.width)} × ${fmt(b.height)} mm at ${fmt(b.x)}, ${fmt(b.y)}` : ''}` :
       (app.context ? 'inside an entity — Esc to go up' : '');
   }
   st('layer').textContent = app.activeLayer ? `layer ${app.activeLayer}` : '';

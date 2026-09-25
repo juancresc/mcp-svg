@@ -86,8 +86,8 @@ def test_save_open_roundtrip(store, tmp_path):
     store.apply([{"op": "add_element", "tag": "text", "attrs": {"x": 5, "y": 5}, "text": "A & <B>",
                   "layer": "NOTES"}])
     saved = store.save("sub/part one")
-    assert saved == "sub/part one.svgcnc" and not store.dirty
-    assert json.loads((tmp_path / saved).read_text())["format"] == "svgcnc"
+    assert saved == "sub/part one.kerf" and not store.dirty
+    assert json.loads((tmp_path / saved).read_text())["format"] == "kerf"
     svg = store.doc.to_svg("file")                      # the SVG export
     assert 'width="2440mm"' in svg and 'viewBox="0 0 2440 1220"' in svg
     assert 'inkscape:groupmode="layer"' in svg and 'stroke="#0000ff"' in svg
@@ -335,15 +335,15 @@ def test_native_project_keeps_everything_and_svg_opens_as_new_tab(store, tmp_pat
     store.open("proj")
     d = store.doc
     assert d.material["name"] == "MDF" and d.material["thickness"] == 12 and d.material["sheet_height"] == 1220
-    assert d.background["opacity"] == 0.4 and store.file == "proj.svgcnc"
+    assert d.background["opacity"] == 0.4 and store.file == "proj.kerf"
     with pytest.raises(DocError):
         store.apply([{"op": "set_material", "material": {"thickness": -1}}])
     (tmp_path / "drawing.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="3" height="3"/></svg>')
     store.open("drawing.svg")
     assert store.file is None and not store.dirty and store.tab.name == "drawing"
-    assert store.save("drawing") == "drawing.svgcnc"   # saving makes it a project
+    assert store.save("drawing") == "drawing.kerf"   # saving makes it a project
     kinds = {f["file"]: f["kind"] for f in store.list_files()}
-    assert kinds == {"proj.svgcnc": "svgcnc", "drawing.svg": "svg", "drawing.svgcnc": "svgcnc"}
+    assert kinds == {"proj.kerf": "kerf", "drawing.svg": "svg", "drawing.kerf": "kerf"}
 
 
 def test_layer_depth_roundtrip(store):
@@ -357,3 +357,20 @@ def test_layer_depth_roundtrip(store):
     assert store.doc.layer("POCKET").depth is None
     with pytest.raises(DocError):
         store.apply([{"op": "update_layer", "name": "POCKET", "depth": -3}])
+
+
+def test_legacy_svgcnc_projects_open_and_save_as_kerf(store, tmp_path):
+    from document import to_native
+    doc_json = json.loads(to_native(store.doc))
+    doc_json["format"] = "svgcnc"
+    (tmp_path / "old.svgcnc").write_text(json.dumps(doc_json))
+    store.open("old")
+    assert store.file == "old.svgcnc"
+    add_rect(store)
+    assert store.save() == "old.kerf"
+
+
+def test_closing_the_last_tab_opens_a_fresh_one(store):
+    only = store.active_id
+    store.close()
+    assert len(store.tabs) == 1 and store.active_id != only and store.state()["name"] == "Untitled"

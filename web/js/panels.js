@@ -210,6 +210,11 @@ const GEOMETRY = {
 const LABELS = { diameter: '⌀', 'font-size': 'size' };
 
 export function renderInspector() {
+  renderInspectorContent();
+  fitPreviews();
+}
+
+function renderInspectorContent() {
   const doc = app.doc;
   if (!doc) return;
   const sel = selectedElements();
@@ -217,14 +222,14 @@ export function renderInspector() {
   const items = selectedItems();
   if (items.length === 1 && items[0].startsWith('g-')) return renderGroupInspector(groupById(items[0]), sel);
   const box = canvas.selectionBox();
-  const preview = previewSvg(sel, box);
-  const size = box ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—';
+  const preview = previewSvg(sel);
+  const size = box && (box.width || box.height) ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—';
 
   if (sel.length > 1) {
     const layers = new Set(sel.map(e => e.layer));
     inspector.innerHTML = `<h2>${sel.length} selected</h2><div class="preview" style="margin-top:8px">${preview}</div>
       <div class="kv">
-        <label>Size</label><span class="val">${size}</span>
+        <label>Size</label><span class="val" data-bounds="auto">${size}</span>
         <label>Position</label><span class="val">${box ? `${fmt(box.x)}, ${fmt(box.y)}` : '—'}</span>
         <label>Layer</label>${layerSelect(layers.size === 1 ? [...layers][0] : '')}
       </div>
@@ -246,7 +251,7 @@ export function renderInspector() {
       <div class="preview" style="margin-top:8px">${preview}</div>
       <div class="kv">
         <label>Layer</label>${layerSelect(el.layer)}
-        <label>Bounds</label><span class="val">${size}</span>
+        <label>Bounds</label><span class="val" data-bounds="auto">${size}</span>
         ${rows}
         ${el.tag === 'text' ? `<label>text</label><input type="text" data-text value="${esc(el.text)}">` : ''}
         ${hasFill ? `<label>fill</label><div class="fill-row">
@@ -282,12 +287,23 @@ function buttons() {
   </div>`;
 }
 
-function previewSvg(els, box) {
-  if (!box) return '';
-  const pad = Math.max(box.width, box.height) * 0.08 + 1;
-  return docToSvg(app.doc, { background: false, ids: new Set(els.map(e => e.id)),
-    viewBox: [box.x - pad, box.y - pad, box.width + 2 * pad, box.height + 2 * pad] })
-    .replace('<svg ', '<svg preserveAspectRatio="xMidYMid meet" ');
+function previewSvg(els) {
+  return docToSvg(app.doc, { background: false, ids: new Set(els.map(e => e.id)) })
+    .replace('<svg ', '<svg preserveAspectRatio="xMidYMid meet" data-fit-preview ');
+}
+
+/** Fit each preview to its own content (works even while the 2D canvas is hidden). */
+function fitPreviews() {
+  for (const svgEl of inspector.querySelectorAll('svg[data-fit-preview]')) {
+    let b;
+    try { b = svgEl.getBBox(); } catch (_) { continue; }
+    if (!b || (!b.width && !b.height)) continue;
+    const pad = Math.max(b.width, b.height) * 0.08 + 1;
+    svgEl.setAttribute('viewBox', `${b.x - pad} ${b.y - pad} ${b.width + 2 * pad} ${b.height + 2 * pad}`);
+    svgEl.removeAttribute('width'); svgEl.removeAttribute('height');
+    const out = inspector.querySelector('[data-bounds]');
+    if (out && out.dataset.bounds === 'auto') out.textContent = `${fmt(b.width)} × ${fmt(b.height)} mm`;
+  }
 }
 
 function bindShapeFields(el) {
@@ -430,12 +446,12 @@ function renderGroupInspector(g, sel) {
   const num = (v, d = 0) => (v === undefined || v === null ? d : v);
   const params = app.doc.params || [];
   inspector.innerHTML = `<h2>Entity <span class="tag-pill">${esc(g.id)}</span></h2>
-    <div class="preview" style="margin-top:8px">${previewSvg(sel, box)}</div>
+    <div class="preview" style="margin-top:8px">${previewSvg(sel)}</div>
     <div class="kv">
       <label>Name</label><input type="text" data-g="name" value="${esc(g.name)}">
       <label>Quantity</label><input type="number" min="1" step="1" data-g="qty" value="${g.qty}">
       <label>Contains</label><span class="val">${sel.length} shapes · ${layers.map(esc).join(', ')}</span>
-      <label>Bounds</label><span class="val">${box ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—'}</span>
+      <label>Bounds</label><span class="val" data-bounds="auto">${box && box.width ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—'}</span>
     </div>
     <h3>3D placement</h3>
     ${a ? `<div class="kv">

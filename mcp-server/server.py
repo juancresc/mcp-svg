@@ -1,4 +1,4 @@
-"""SVG CNC editor server: MCP tools (SSE, port 8766) + HTTP API and web UI (port 8765).
+"""Kerf server: MCP tools (SSE, port 8766) + HTTP API and web UI (port 8765).
 
 Both front ends are thin wrappers over one `Store` (see store.py), which owns the document.
 """
@@ -24,7 +24,7 @@ from store import Store
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(message)s")
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
-log = logging.getLogger("svg-mcp")
+log = logging.getLogger("kerf")
 
 APP_DIR = Path(__file__).resolve().parent
 WEB_DIR = Path(os.environ.get("WEB_DIR", APP_DIR / "web"))
@@ -35,7 +35,7 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8766"))
 store = Store(DATA_DIR)
 # Changes on every start; lets the browser notice a restart and reload the state
 INSTANCE_ID = uuid.uuid4().hex
-INSTRUCTIONS = """SVG CNC editor shared with the user (they see every change live at http://localhost:8765).
+INSTRUCTIONS = """Kerf — a CNC design editor shared with the user (they see every change live at http://localhost:8765).
 - Units: 1 SVG unit = 1 mm. Stroke colour/line style come from the element's LAYER, never pass them.
 - Layers: CUT_OUTSIDE = part outlines, CUT_INSIDE = holes/slots/windows, ENGRAVE = partial depth,
   NOTES = labels/dimensions (never cut), HARDWARE = bought parts for the 3D preview (never cut).
@@ -45,7 +45,7 @@ INSTRUCTIONS = """SVG CNC editor shared with the user (they see every change liv
 - get_selection tells you what the user selected ("this part"); set_selection highlights for them.
 - Check your work with take_screenshot (view "2d" or "3d"). Prefer add_svg for many shapes (one undo).
 - Never discard the user's unsaved work or close their tabs without asking."""
-mcp = FastMCP("svg-editor", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS)
+mcp = FastMCP("kerf", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS)
 
 
 def tool(fn):
@@ -92,7 +92,7 @@ def get_document_info() -> str:
 
 @tool
 def list_documents() -> str:
-    """Projects (.svgcnc) and importable drawings (.svg, .dxf) in the data folder."""
+    """Projects (.kerf) and importable drawings (.svg, .dxf) in the data folder."""
     return json.dumps({"files": store.list_files(), "open": store.file})
 
 
@@ -111,8 +111,8 @@ def new_document(width: float = 800, height: float = 600) -> str:
 @tool
 def open_document(file: str) -> str:
     """Open a project from the data folder in a new tab (or switch to its tab if already open).
-    Projects are .svgcnc files ("desk/desk" finds desk/desk.svgcnc). An .svg or .dxf opens as a
-    new unsaved tab (saving it creates a .svgcnc).
+    Projects are .kerf files ("desk/desk" finds desk/desk.kerf). An .svg or .dxf opens as a
+    new unsaved tab (saving it creates a .kerf).
 
     Args:
         file: Path relative to the data folder; the extension is optional for projects.
@@ -145,12 +145,12 @@ def close_document(tab: str = "", discard_changes: bool = False) -> str:
 
 @tool
 def save_document(file: str = "") -> str:
-    """Save the project (.svgcnc: layers, entities, 3D placements, parameters, material,
+    """Save the project (.kerf: layers, entities, 3D placements, parameters, material,
     reference image). Without `file` it saves to its current file; with `file` it saves under
     that name (Save As; overwrites). Use export_svg / export_cnc for SVG and DXF.
 
     Args:
-        file: Optional path relative to the data folder, e.g. "desk/v2" → desk/v2.svgcnc.
+        file: Optional path relative to the data folder, e.g. "desk/v2" → desk/v2.kerf.
     """
     return json.dumps({"saved": store.save(file or None)})
 
@@ -763,7 +763,7 @@ post_mkdir = action(lambda b: store.make_folder(b["folder"]))
 
 
 def _import(b):
-    if b.get("project"):     # a .svgcnc opened from the user's computer
+    if b.get("project"):     # a .kerf opened from the user's computer
         from document import from_native
         doc = from_native(b["project"])
         with store.lock:
@@ -821,7 +821,7 @@ async def get_export(request):
             body, fname, ctype = store.doc.to_svg("file").encode(), f"{name}.svg", "image/svg+xml"
         elif kind == "project":
             from document import to_native
-            body, fname, ctype = to_native(store.doc).encode(), f"{name}.svgcnc", "application/json"
+            body, fname, ctype = to_native(store.doc).encode(), f"{name}.kerf", "application/json"
         else:
             raise DocError(f"Unknown export '{kind}'")
     return web.Response(body=body, content_type=ctype,

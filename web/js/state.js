@@ -13,13 +13,13 @@ export function emit(event, data) {
 
 function pref(key, fallback) {
   try {
-    const v = localStorage.getItem('svgcnc.' + key);
+    const v = localStorage.getItem('kerf.' + key);
     return v === null ? fallback : JSON.parse(v);
   } catch (_) { return fallback; }
 }
 
 export function savePref(key, value) {
-  try { localStorage.setItem('svgcnc.' + key, JSON.stringify(value)); } catch (_) {}
+  try { localStorage.setItem('kerf.' + key, JSON.stringify(value)); } catch (_) {}
 }
 
 export const app = {

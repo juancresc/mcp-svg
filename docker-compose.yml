@@ -1,5 +1,5 @@
 services:
-  svg-mcp:
+  kerf:
     build: ./mcp-server
     ports:
       - "8765:8765"   # editor UI + HTTP API

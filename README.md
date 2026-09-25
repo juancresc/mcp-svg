@@ -1,10 +1,10 @@
-### MCP-first CNC design editor
+### Kerf — MCP-first CNC design editor
 
 A browser CAD-style editor for CNC cut drawings (1 unit = 1 mm) with an MCP server, so Claude can draw, edit and preview the same documents live with you.
 
 [Demo](https://youtu.be/_wV0kU_m0hc)
 
-- **Projects** (`.svgcnc`) keep everything: layers, parts (entities), 3D placements, parameters, material & stock. Several open at once in tabs.
+- **Projects** (`.kerf`) keep everything: layers, parts (entities), 3D placements, parameters, material & stock. Several open at once in tabs.
 - **Drawing:** click–click or drag, type exact sizes (length/angle, width/height, diameter), snapping, measuring tool, dimensions.
 - **Layers:** rename, colour, solid/dashed/dotted, lock, hide, reorder, description, CNC-export flag, **pocket depth**.
 - **Entities:** group a part's outline + holes. Double-click to edit inside, set quantity and 3D placement.
@@ -34,5 +34,5 @@ Draw a 400 × 300 mm box lid in 6 mm MDF with four 8 mm holes 20 mm from the cor
 
 Tests
 ```
-docker compose run --rm --no-deps -T --entrypoint python svg-mcp -m pytest -q tests
+docker compose run --rm --no-deps -T --entrypoint python kerf -m pytest -q tests
 ```

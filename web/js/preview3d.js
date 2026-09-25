@@ -3,7 +3,7 @@
 // rotation → position). Document params become sliders that move parts ("move").
 // Entities without an assembly are laid flat where they are on the sheet.
 
-import { app, on, descendants } from './state.js';
+import { app, on, descendants, selectItems, setContext } from './state.js';
 import { docToSvg } from './geometry.js';
 import { esc, toast, download } from './ui.js';
 
@@ -191,12 +191,15 @@ function buildScene() {
     mesh.position.copy(base);
     mesh.name = g.name;
     mesh.userData.name = g.name;
+    mesh.userData.gid = g.id || null;
+    mesh.userData.ids = ids;
     partsRoot.add(mesh);
     parts.push({ mesh, base, move: a.move });
     count++;
   }
   computeExplodeDirections();
   applyParams();
+  highlightSelection();
   renderPanel(mode, count);
   built = app.server.version;
 }
@@ -354,6 +357,33 @@ export async function exportModel(format) {
   download(new Blob([glb], { type: 'model/gltf-binary' }), `${name}.glb`);
   return true;
 }
+
+// ── Selection ↔ 3D ─────────────────────────────────────────
+
+function highlightSelection() {
+  for (const p of parts) {
+    const sel = [...p.mesh.userData.ids].some(id => app.selection.has(id));
+    p.mesh.material.emissive?.set(sel ? '#2563eb' : '#000000');
+    p.mesh.material.emissiveIntensity = sel ? 0.45 : 0;
+  }
+}
+on('selection', () => { if (parts.length) highlightSelection(); });
+
+// Click (not drag) on a part selects its entity
+let downAt = null;
+host.addEventListener('pointerdown', (e) => { downAt = [e.clientX, e.clientY]; });
+host.addEventListener('pointerup', (e) => {
+  if (!downAt || Math.hypot(e.clientX - downAt[0], e.clientY - downAt[1]) > 4 || !renderer) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObjects(parts.map(p => p.mesh), false)[0];
+  if (!hit) { selectItems([]); return; }
+  const gid = hit.object.userData.gid;
+  setContext(null);
+  if (gid) selectItems([gid]);
+  else selectItems([...hit.object.userData.ids]);
+});
 
 let rebuildTimer = null;
 on('doc', () => {

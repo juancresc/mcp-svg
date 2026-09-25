@@ -4,17 +4,17 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A browser-based CAD-style editor for **CNC-ready cut drawings**, plus an MCP server so Claude can draw, edit and preview the same documents live with the user. 1 unit = 1 mm everywhere.
+**Kerf** is a browser-based CAD-style editor for **CNC-ready cut drawings**, plus an MCP server so Claude can draw, edit and preview the same documents live with the user. 1 unit = 1 mm everywhere.
 
-Projects are saved as **`.svgcnc`** (JSON: layers, elements, entities, 3D placements, parameters, material, reference image). **SVG, DXF, per-part files, PNG, GLB and STL are exports.** SVG and DXF files can also be opened or imported.
+Projects are saved as **`.kerf`** (JSON: layers, elements, entities, 3D placements, parameters, material, reference image). **SVG, DXF, per-part files, PNG, GLB and STL are exports.** SVG and DXF files can also be opened or imported.
 
-It is being used to design a plywood sit/stand desk. That project lives in `data/desk/`: `generate.py` (the parametric source, it also writes `desk.svgcnc`), `DESIGN.md` (the spec) and reference photos. `For CNC.dxf` there is **only for a final comparison, never a design source**.
+It is being used to design a plywood sit/stand desk. That project lives in `data/desk/`: `generate.py` (the parametric source, it also writes `desk.kerf`), `DESIGN.md` (the spec) and reference photos. `For CNC.dxf` there is **only for a final comparison, never a design source**.
 
 ## Running & testing
 
 ```bash
 docker compose up -d --build        # editor at http://localhost:8765, MCP (SSE) on :8766
-docker compose run --rm --no-deps -T --entrypoint python svg-mcp -m pytest -q tests   # server + MCP tool tests
+docker compose run --rm --no-deps -T --entrypoint python kerf -m pytest -q tests   # server + MCP tool tests
 python3 data/desk/generate.py --push   # regenerate the desk and (re)open it in the editor
 ```
 
@@ -30,7 +30,7 @@ python3 data/desk/generate.py --push   # regenerate the desk and (re)open it in 
 mcp-server/
   document.py  Document model: Layer (colour, line style, lock, export, description, depth),
                Element (id, tag, layer, attrs, text, group), Group ("entity": name, parent, qty,
-               assembly), params, material. SVG read/write ("file" / "cnc"), .svgcnc (to/from_native).
+               assembly), params, material. SVG read/write ("file" / "cnc"), .kerf (to/from_native).
   store.py     Store: open documents as Tabs (file, dirty fingerprint, undo/redo, selection),
                apply(ops) = one atomic undo step, files in data/, session autosave, screenshots.
   export.py    SVG geometry → DXF (ezdxf; LWPOLYLINE with arc bulges, CIRCLE), DXF → SVG import,
@@ -52,7 +52,7 @@ web/js/
                pockets from layers with depth), place with assembly, sliders, GLB/STL export
   materials.js material presets
   main.js      wiring: state → views, status bar, code panel, side panel, selection sync, screenshots
-data/          projects (*.svgcnc), imports (.svg/.dxf), exports/, .session.json (gitignored)
+data/          projects (*.kerf), imports (.svg/.dxf), exports/, .session.json (gitignored)
 ```
 
 ### Model rules
@@ -65,6 +65,7 @@ data/          projects (*.svgcnc), imports (.svg/.dxf), exports/, .session.json
   - `rotation` is in degrees (Euler XYZ); `position` is in world mm (X width, Y up, Z toward the viewer).
   - optional `color`, and `move: {param, axis}` tied to a doc `params` slider.
   - Opposite-hand parts with pockets must be drawn mirrored (see the desk's lower frame B).
+- Older `.svgcnc` files (the format's first name) still open; saving writes `.kerf`.
 - `material` holds name, type, thickness, colour, sheet size, tool Ø and notes. It supplies the default thickness and colour in 3D.
 
 ### Store / sync
@@ -86,7 +87,7 @@ data/          projects (*.svgcnc), imports (.svg/.dxf), exports/, .session.json
 - **Exports:** `GET /api/export/{cnc|cnc-dxf|parts|file|project}`.
 - **Other:** `POST /api/selection` · `POST /api/screenshot` · `GET /api/background`.
 
-## MCP tools (server `svg-editor`, SSE on :8766)
+## MCP tools (server `kerf`, SSE on :8766)
 
 The server also sends workflow instructions to the client (`INSTRUCTIONS` in server.py).
 
@@ -102,7 +103,7 @@ The server also sends workflow instructions to the client (`INSTRUCTIONS` in ser
 1. `get_document_info` / `list_tabs`. Never discard the user's unsaved work or close their tabs without asking.
 2. Use layers, not colours: outlines → CUT_OUTSIDE, holes/slots → CUT_INSIDE, pockets → a layer with `depth`, labels/dimensions → NOTES, bought parts → a non-export layer.
 3. Draw parts with `add_svg` (`<path>`, `fill="none"`). Group each part (`group_elements`), set `qty` and an `assembly` so part exports and the 3D preview work.
-4. Check with `take_screenshot` (2d and 3d). `save_document` writes the .svgcnc. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
+4. Check with `take_screenshot` (2d and 3d). `save_document` writes the .kerf. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
 
 ## SVG/DXF for CNC guidelines
 - 1 unit = 1 mm; exports carry mm units. Don't scale in CAM.

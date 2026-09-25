@@ -19,7 +19,8 @@ from pathlib import Path
 
 from document import Document, DocError, to_native, from_native, clean_material
 
-NATIVE_EXT = ".svgcnc"
+NATIVE_EXT = ".kerf"
+LEGACY_EXT = ".svgcnc"      # early name of the project format; still opens
 
 HISTORY_LIMIT = 200
 COALESCE_SECONDS = 1.0
@@ -142,6 +143,7 @@ class Store:
             idx = order.index(tab.id)
             del self.tabs[tab.id]
             if not self.tabs:
+                self.active_id = None          # nothing left to reuse: start a fresh tab
                 self._add_tab(Document())
             elif self.active_id == tab.id:
                 rest = list(self.tabs)
@@ -316,10 +318,10 @@ class Store:
     def rel(self, path: Path) -> str:
         return path.resolve().relative_to(self.data_dir.resolve()).as_posix()
 
-    OPENABLE = (NATIVE_EXT, ".svg", ".dxf")
+    OPENABLE = (NATIVE_EXT, LEGACY_EXT, ".svg", ".dxf")
 
     def list_files(self) -> list[dict]:
-        """Projects (.svgcnc) and importable drawings (.svg, .dxf) in the data folder."""
+        """Projects (.kerf) and importable drawings (.svg, .dxf) in the data folder."""
         out = []
         for p in sorted(self.data_dir.rglob("*")):
             rel = p.relative_to(self.data_dir)
@@ -363,19 +365,22 @@ class Store:
             return tab.id
 
     def find(self, name: str) -> Path:
-        """A project by name: 'desk/desk' → desk/desk.svgcnc (or the exact file if given)."""
+        """A project by name: 'desk/desk' → desk/desk.kerf (or the exact file if given)."""
         low = (name or "").lower()
         if low.endswith(self.OPENABLE):
             return self.resolve(name, ext="")
         native = self.resolve(name, ext=NATIVE_EXT)
         if native.exists():
             return native
+        legacy = self.resolve(name, ext=LEGACY_EXT)
+        if legacy.exists():
+            return legacy
         svg = self.resolve(name, ext=".svg")
         return svg if svg.exists() else native
 
     def open(self, name: str) -> str:
-        """Open a project (.svgcnc) in a new tab, or switch to its tab if it's already open.
-        .svg and .dxf files are imported into a new, unsaved tab (Save makes a .svgcnc)."""
+        """Open a project (.kerf) in a new tab, or switch to its tab if it's already open.
+        .svg and .dxf files are imported into a new, unsaved tab (Save makes a .kerf)."""
         with self.lock:
             path = self.find(name)
             if not path.exists():
@@ -387,7 +392,7 @@ class Store:
                     self._bump()
                     return t.id
             ext = path.suffix.lower()
-            if ext == NATIVE_EXT:
+            if ext in (NATIVE_EXT, LEGACY_EXT):
                 tab = self._add_tab(from_native(path.read_text(encoding="utf-8")), rel)
             else:
                 if ext == ".dxf":
@@ -421,8 +426,7 @@ class Store:
             target = name or t.file
             if not target:
                 raise DocError("Document has no file name yet: pass a name (Save As)")
-            if target.lower().endswith((".svg", ".dxf")):
-                target = target[:-4]          # projects are .svgcnc; SVG/DXF are exports
+            target = re.sub(r"\.(kerf|svgcnc|svg|dxf)$", "", target, flags=re.I)   # projects are .kerf
             path = self.resolve(target, ext=NATIVE_EXT)
             rel = self.rel(path)
             if any(o.file == rel and o is not t for o in self.tabs.values()):

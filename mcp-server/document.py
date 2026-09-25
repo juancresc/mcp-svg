@@ -429,7 +429,7 @@ class Document:
         if mode == "file":
             meta = json.dumps({"groups": [asdict(g) for g in self.groups], "params": self.params,
                                "material": self.material})
-            out.append(f'  <metadata id="svgcnc" data-svgcnc={quoteattr(meta)}/>')
+            out.append(f'  <metadata id="kerf" data-kerf={quoteattr(meta)}/>')
         if mode == "file" and self.background:
             out.append(f'  <image data-role="background" x="0" y="0" width="{w}" height="{h}" '
                        f'preserveAspectRatio="xMidYMid meet" opacity="{self.background.get("opacity", 0.3)}" '
@@ -496,10 +496,11 @@ class Document:
 
         # Groups ("entities") and 3D parameters from our metadata; ids are remapped on import
         group_map: dict[str, str] = {}
-        meta = next((m for m in root.iter() if local(m.tag) == "metadata" and m.get("data-svgcnc")), None)
+        meta = next((m for m in root.iter() if local(m.tag) == "metadata"
+                     and (m.get("data-kerf") or m.get("data-svgcnc"))), None)
         if meta is not None:
             try:
-                data = json.loads(meta.get("data-svgcnc"))
+                data = json.loads(meta.get("data-kerf") or meta.get("data-svgcnc"))
                 incoming = [Group(**{k: g.get(k) for k in ("id", "name", "parent", "qty", "assembly") if k in g})
                             for g in data.get("groups", [])]
                 for g in incoming:
@@ -708,11 +709,12 @@ def fmt(v) -> str:
     return str(int(f)) if f == int(f) else repr(f)
 
 
-# ── Native project file (.svgcnc) ──────────────────────────
+# ── Native project file (.kerf) ────────────────────────────
 # Everything the editor knows (layers, entities, 3D placements, parameters, material,
 # reference image) in one JSON file. SVG and DXF are exports.
 
-NATIVE_FORMAT = "svgcnc"
+NATIVE_FORMAT = "kerf"
+LEGACY_FORMATS = ("svgcnc",)   # early name of the same format
 NATIVE_VERSION = 1
 
 
@@ -725,14 +727,14 @@ def from_native(text: str) -> Document:
     try:
         data = json.loads(text)
     except ValueError as e:
-        raise DocError(f"Not a valid .svgcnc file: {e}")
-    if not isinstance(data, dict) or data.get("format") != NATIVE_FORMAT:
-        raise DocError("Not a .svgcnc project file")
+        raise DocError(f"Not a valid .kerf file: {e}")
+    if not isinstance(data, dict) or data.get("format") not in (NATIVE_FORMAT, *LEGACY_FORMATS):
+        raise DocError("Not a .kerf project file")
     if int(data.get("version", 0)) > NATIVE_VERSION:
         raise DocError("This file was saved by a newer version of the editor")
     try:
         doc = Document.from_json(data["document"])
     except (KeyError, TypeError) as e:
-        raise DocError(f"Damaged .svgcnc file: {e}")
+        raise DocError(f"Damaged .kerf file: {e}")
     doc.prune_groups()
     return doc

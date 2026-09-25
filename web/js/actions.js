@@ -136,7 +136,7 @@ async function browseDialog(mode, { suggestion = '', folder = '' } = {}) {
     const rows = [
       ...(state.folder ? [`<button type="button" class="file-item" data-folder="${esc(parts.slice(0, -1).join('/'))}"><span class="ico">↰</span><span>..</span></button>`] : []),
       ...listing.dirs.map(d => `<button type="button" class="file-item" data-folder="${esc(d.path)}"><span class="ico">📁</span><span>${esc(d.name)}</span></button>`),
-      ...listing.files.filter(f => mode === 'open' || f.kind === 'svgcnc').map(f => `<button type="button" class="file-item" data-file="${esc(f.file)}"><span class="ico" title="${f.kind}">${{ svgcnc: '📐', svg: '🖼', dxf: '📏' }[f.kind] || '📄'}</span><span>${esc(f.name)}</span>
+      ...listing.files.filter(f => mode === 'open' || (f.kind === 'kerf' || f.kind === 'svgcnc')).map(f => `<button type="button" class="file-item" data-file="${esc(f.file)}"><span class="ico" title="${f.kind}">${{ kerf: '📐', svgcnc: '📐', svg: '🖼', dxf: '📏' }[f.kind] || '📄'}</span><span>${esc(f.name)}</span>
         ${app.server.tabs.some(t => t.file === f.file) ? '<span class="current">open</span>' : ''}
         <span class="meta">${new Date(f.modified * 1000).toLocaleString()} · ${fmt(f.size / 1024, 1)} KB</span></button>`),
     ];
@@ -149,8 +149,8 @@ async function browseDialog(mode, { suggestion = '', folder = '' } = {}) {
       <div class="file-list"></div>
       ${mode === 'save' ? `<div class="fb-name"><label>File name</label><input name="name" class="field" value="${esc(suggestion)}"></div>` : ''}
       <p class="hint" style="margin-top:8px">${mode === 'save'
-        ? 'Saved as a project (.svgcnc): layers, entities, 3D placements, material. SVG/DXF are in Export. “Save to computer…” saves anywhere on your machine.'
-        : '📐 projects (.svgcnc) · 🖼 SVG and 📏 DXF open as new documents. “Open from computer…” opens files from anywhere on your machine.'}</p>`,
+        ? 'Saved as a Kerf project (.kerf): layers, entities, 3D placements, material. SVG/DXF are in Export. “Save to computer…” saves anywhere on your machine.'
+        : '📐 projects (.kerf) · 🖼 SVG and 📏 DXF open as new documents. “Open from computer…” opens files from anywhere on your machine.'}</p>`,
     buttons: [{ label: mode === 'save' ? 'Save to computer…' : 'Open from computer…', value: 'computer', left: true },
       { label: 'Cancel', value: null }, { label: mode === 'save' ? 'Save' : 'Open', value: 'ok', kind: 'primary' }],
     setup: (form, close) => {
@@ -164,7 +164,7 @@ async function browseDialog(mode, { suggestion = '', folder = '' } = {}) {
           form.querySelectorAll('.file-item').forEach(x => x.classList.remove('selected'));
           file.classList.add('selected');
           state.selected = file.dataset.file;
-          if (mode === 'save') form.name.value = file.dataset.file.split('/').pop().replace(/\.(svgcnc|svg|dxf)$/, '');
+          if (mode === 'save') form.name.value = file.dataset.file.split('/').pop().replace(/\.(kerf|svgcnc|svg|dxf)$/, '');
         }
         if (e.target.closest('[data-mkdir]')) {
           const name = prompt('New folder name');
@@ -203,21 +203,21 @@ export async function openFromComputer() {
   if (window.showOpenFilePicker) {
     try {
       [handle] = await window.showOpenFilePicker({ types: [{ description: 'Project, SVG or DXF', accept: {
-        'application/json': ['.svgcnc'], 'image/svg+xml': ['.svg'], 'application/dxf': ['.dxf'] } }] });
+        'application/json': ['.kerf', '.svgcnc'], 'image/svg+xml': ['.svg'], 'application/dxf': ['.dxf'] } }] });
       file = await handle.getFile();
     } catch (_) { return; }   // cancelled
   } else {
-    file = await pickFile('.svgcnc,.svg,.dxf,image/svg+xml');
+    file = await pickFile('.kerf,.svgcnc,.svg,.dxf,image/svg+xml');
     if (!file) return;
   }
-  const name = file.name.replace(/\.(svgcnc|svg|dxf)$/i, '');
-  const kind = (file.name.match(/\.(svgcnc|svg|dxf)$/i) || [, 'svg'])[1].toLowerCase();
+  const name = file.name.replace(/\.(kerf|svgcnc|svg|dxf)$/i, '');
+  const kind = (file.name.match(/\.(kerf|svgcnc|svg|dxf)$/i) || [, 'svg'])[1].toLowerCase().replace('svgcnc', 'kerf');
   const isDxf = kind === 'dxf';
-  const s = kind === 'svgcnc' ? await api.importProject(await file.text(), { name })
+  const s = kind === 'kerf' ? await api.importProject(await file.text(), { name })
     : isDxf ? await api.importDxf(await toBase64(file), { new_tab: true, name })
     : await api.importSvg(await file.text(), { new_tab: true, name });
   if (!s) return;
-  if (handle && kind === 'svgcnc') {   // a project opened from disk can be saved back in place
+  if (handle && kind === 'kerf') {   // a project opened from disk can be saved back in place
     localHandles.set(s.active, handle);
     await api.savedLocal(file.name);
   }
@@ -247,12 +247,12 @@ export async function save() {
 }
 
 export async function saveAs(initial) {
-  const suggestion = initial || (app.server.file ? app.server.file.split('/').pop().replace(/\.svgcnc$/, '') : app.server.name || 'untitled');
+  const suggestion = initial || (app.server.file ? app.server.file.split('/').pop().replace(/\.(kerf|svgcnc)$/, '') : app.server.name || 'untitled');
   const folder = app.server.file && app.server.file.includes('/') ? app.server.file.split('/').slice(0, -1).join('/') : '';
   const r = await browseDialog('save', { suggestion, folder });
   if (!r) return false;
   if (r.computer) return saveToComputer();
-  const file = r.file.replace(/\.(svgcnc|svg)$/, '') + '.svgcnc';
+  const file = r.file.replace(/\.(kerf|svgcnc|svg)$/, '') + '.kerf';
   let exists = false;
   try { exists = (await api.files()).files.some(f => f.file === file); } catch (_) {}
   if (exists && file !== app.server.file &&
@@ -280,12 +280,12 @@ async function writeToHandle(handle) {
 }
 
 export async function saveToComputer() {
-  const name = `${app.server.name || 'untitled'}.svgcnc`;
+  const name = `${app.server.name || 'untitled'}.kerf`;
   if (window.showSaveFilePicker) {
     let handle;
     try {
       handle = await window.showSaveFilePicker({ suggestedName: name,
-        types: [{ description: 'SVG CNC project', accept: { 'application/json': ['.svgcnc'] } }] });
+        types: [{ description: 'Kerf project', accept: { 'application/json': ['.kerf'] } }] });
     } catch (_) { return false; }  // cancelled
     localHandles.set(app.server.active, handle);
     return writeToHandle(handle);

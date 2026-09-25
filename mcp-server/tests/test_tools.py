@@ -68,11 +68,11 @@ def test_tabs_and_files(srv, tmp_path):
     tabs = j(srv.list_tabs())["tabs"]
     assert len(tabs) == 2 and tabs[1]["active"]
     j(srv.switch_tab(tabs[0]["id"]))
-    assert j(srv.get_document_info())["file"] == "one.svgcnc"
+    assert j(srv.get_document_info())["file"] == "one.kerf"
     (tmp_path / "ref").mkdir()
     (tmp_path / "ref" / "a.dxf").write_bytes(b"x")
     files = [f["file"] for f in j(srv.list_files())["files"]]
-    assert "ref/a.dxf" in files and "one.svgcnc" in files
+    assert "ref/a.dxf" in files and "one.kerf" in files
     assert "error" in j(srv.close_document(tabs[0]["id"])) or True
 
 
