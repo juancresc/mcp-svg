@@ -448,7 +448,8 @@ def update_group(group_id: str, name: str = "", qty: int = 0, assembly: str = ""
         qty: Quantity to cut (≥ 1), used in part exports.
         assembly: JSON placing the part in 3D, or "null" to clear:
             {"matrix": [a,b,c,d,e,f],   # maps document 2D (mm) → part-local 2D profile coords
-             "thickness": 18, "position": [x,y,z], "rotation": [rx,ry,rz],   # degrees, applied X,Y,Z
+             "thickness": 18,           # optional: omit for sheet parts to follow the material
+             "position": [x,y,z], "rotation": [rx,ry,rz],   # degrees, applied X,Y,Z
              "color": "#e3c592", "move": {"param": "lift", "axis": [0,1,0]}}
             World: X = width, Y = up, Z toward the viewer. The profile is extruded along +Z.
     """
@@ -737,8 +738,12 @@ def check_cnc() -> str:
     set_selection to show the user): open contours on cut layers, holes smaller than the tool,
     duplicate shapes (cut twice), text on cut layers, shapes outside the document, cut shapes not
     in any entity, entities without an outline, and parts that don't fit the material sheet."""
+    return json.dumps(cnc_issues(store.doc))
+
+
+def cnc_issues(d) -> dict:
+    """check_cnc for any document (also GET /api/check?tab=)."""
     from export import element_shapes
-    d = store.doc
     tool_d = float(d.material.get("tool_diameter") or 6)
     issues = []
     add = lambda kind, ids, msg: issues.append({"kind": kind, "ids": ids, "message": msg})
@@ -780,8 +785,7 @@ def check_cnc() -> str:
             w, h = b[2] - b[0], b[3] - b[1]
             if not ((w <= sw and h <= sh) or (w <= sh and h <= sw)):
                 add("bigger_than_sheet", [g.id], f"Entity '{g.name}' ({w:.0f} × {h:.0f}) doesn't fit a {sw:g} × {sh:g} sheet")
-    return json.dumps({"ok": not issues, "issues": issues[:200], "count": len(issues),
-                       "tool_diameter": tool_d})
+    return {"ok": not issues, "issues": issues[:200], "count": len(issues), "tool_diameter": tool_d}
 
 
 @mcp.prompt()
@@ -815,7 +819,7 @@ def get_guide(topic: str = "") -> str:
 
     Args:
         topic: Optional section to return instead of the whole guide, matched against the headings:
-            workflow, layers, placement, cnc, svg, children, http.
+            workflow, layers, placement, cnc, svg, children, http, scripts.
     """
     if not topic:
         return GUIDE_TEXT
@@ -1122,6 +1126,20 @@ async def post_screenshot(request):
     return web.json_response({"status": "ok"})
 
 
+SCRIPT = APP_DIR / "kerf_script.py"      # helpers for parametric scripts (GET /api/script)
+
+
+async def get_script(request):
+    """kerf_script.py: stdlib-only helpers for scripts that build parts over this HTTP API."""
+    return web.Response(text=SCRIPT.read_text(encoding="utf-8"), content_type="text/x-python", charset="utf-8")
+
+
+@api
+async def get_check(request):
+    """check_cnc for a tab (?tab=, default the active one)."""
+    return web.json_response(cnc_issues(store.get_tab(request.query.get("tab") or None).doc))
+
+
 async def get_guide_http(request):
     """The design guide as Markdown (the same text as the get_guide MCP tool)."""
     return web.Response(text=GUIDE_TEXT, content_type="text/markdown", charset="utf-8")
@@ -1235,6 +1253,8 @@ def run_http_server():
     r.add_post("/api/screenshot", post_screenshot)
     r.add_get("/api/connect", get_connect)
     r.add_get("/api/guide", get_guide_http)
+    r.add_get("/api/script", get_script)
+    r.add_get("/api/check", get_check)
     r.add_static("/", WEB_DIR)
 
     loop = asyncio.new_event_loop()

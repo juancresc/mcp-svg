@@ -548,6 +548,10 @@ def apply_op(doc: Document, op: dict):
     if kind == "reorder_element":
         return doc.reorder_element(op["id"], op["where"])
     if kind == "add_layer":
+        if op.get("exist_ok") and doc.has_layer(op["name"]):   # scripts re-run: update it instead
+            return doc.update_layer(op["name"], None, op.get("color"), op.get("line_style"), None, None,
+                                    op.get("export"), op.get("description"),
+                                    op["depth"] if "depth" in op else ...).name
         return doc.add_layer(op["name"], op.get("color", "#000000"), op.get("line_style", "solid"),
                              op.get("export", True), op.get("visible", True), op.get("locked", False),
                              op.get("description", ""), op.get("depth")).name

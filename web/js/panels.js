@@ -562,13 +562,13 @@ function renderGroupInspector(g, sel) {
     <p class="hint" style="margin-top:6px">Click a row to select it on the canvas · × takes it out of “${esc(g.name)}”.</p>
     <h3>3D placement</h3>
     ${a ? `<div class="kv">
-      <label>Thickness</label><span class="unit" data-unit="mm"><input type="number" step="any" data-a="thickness" value="${num(a.thickness, 18)}"></span>
+      <label>Thickness</label><span class="unit" data-unit="mm"><input type="number" step="any" min="0.1" data-a="thickness" value="${a.thickness ?? ''}" placeholder="${app.doc.material?.thickness || 18} (material)" title="Empty = follow the material thickness"></span>
       <label>Position</label><div class="pair" style="grid-template-columns:1fr 1fr 1fr">${[0, 1, 2].map(i => `<input type="number" step="any" data-a="position.${i}" value="${num(a.position?.[i])}" title="${'xyz'[i]} (mm)">`).join('')}</div>
       <label>Rotation °</label><div class="pair" style="grid-template-columns:1fr 1fr 1fr">${[0, 1, 2].map(i => `<input type="number" step="any" data-a="rotation.${i}" value="${num(a.rotation?.[i])}" title="about ${'xyz'[i]}">`).join('')}</div>
       <label>Moves with</label><select data-a="move"><option value="">— fixed —</option>${params.map(p =>
         `<option value="${esc(p.name)}" ${a.move?.param === p.name ? 'selected' : ''}>${esc(p.label || p.name)}</option>`).join('')}</select>
     </div>
-    <p class="hint" style="margin-top:6px">World: X = width, Y = up, Z = toward you. The part's outline is extruded by its thickness.</p>
+    <p class="hint" style="margin-top:6px">World: X = width, Y = up, Z = toward you. The part's outline is extruded by its thickness (empty = the material's).</p>
     <div class="btn-row"><button class="btn" data-open3d>Open 3D preview</button><button class="btn danger" data-a-clear>Remove from 3D</button></div>`
     : `<p class="hint">Not placed in 3D yet: the preview lays it flat where it is on the sheet.</p>
        <div class="btn-row"><button class="btn" data-a-init>Place in 3D…</button><button class="btn" data-open3d>Open 3D preview</button></div>`}
@@ -594,14 +594,15 @@ function renderGroupInspector(g, sel) {
       const [k, i] = key.split('.');
       next[k] = next[k] || [0, 0, 0];
       next[k][+i] = +inp.value || 0;
-    } else next[key] = +inp.value || 0;
+    } else if (key === 'thickness' && !(+inp.value > 0)) delete next.thickness;   // follow the material
+    else next[key] = +inp.value || 0;
     upd({ assembly: next }, '3D placement');
   }));
   inspector.querySelector('[data-a-clear]')?.addEventListener('click', () => upd({ assembly: null }, 'Remove from 3D'));
   inspector.querySelector('[data-a-init]')?.addEventListener('click', () => {
     // Start as a flat board lying where it is on the sheet: sheet (x, y) → world (x, 0, y)
     const b = box || { x: 0, y: 0, width: 0, height: 0 };
-    upd({ assembly: { matrix: [1, 0, 0, -1, -b.x, b.y + b.height], thickness: 18,
+    upd({ assembly: { matrix: [1, 0, 0, -1, -b.x, b.y + b.height],
                       position: [b.x, 0, b.y + b.height], rotation: [-90, 0, 0] } }, 'Place in 3D');
   });
   inspector.querySelector('[data-open3d]')?.addEventListener('click', () => actions.open3d());

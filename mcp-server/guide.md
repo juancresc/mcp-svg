@@ -52,7 +52,7 @@ World axes: **X = width (left → right), Y = up, Z = toward the viewer (front)*
 
 Each entity's `assembly` has these fields:
 - **`matrix [a,b,c,d,e,f]`** maps drawing coordinates to the part's own 2D coordinates (x right, y up): `local = (a·x + c·y + e, b·x + d·y + f)`.
-- **`thickness`**: the extrusion along local +z. The **top face** is at z = thickness; it's the router face, where pockets are cut.
+- **`thickness`**: the extrusion along local +z. **Leave it out for parts cut from the sheet** so they follow the material thickness (`set_material`); set it only for other stock (rods, hardware). The **top face** is at z = thickness; it's the router face, where pockets are cut.
 - **`rotation`** in degrees (Euler XYZ), then **`position`**: where the local origin goes, in world mm.
 - Optional: `color`, and `move: {param, axis}` to slide the part with a `set_params` slider.
 
@@ -110,4 +110,38 @@ Every tool has an HTTP equivalent on the editor's address:
 
 Send `Content-Type: application/json` on POSTs. When the server has a token, add `Authorization: Bearer <token>` to every request.
 
-For big or parametric designs, a script that computes the geometry and posts one ops batch is often easier than hundreds of calls.
+For big or parametric designs, a script that computes the geometry and posts one ops batch is often easier than hundreds of calls: see Parametric scripts.
+
+## Parametric scripts
+
+For anything with more than a few parts, write a Python script: it computes the geometry, posts one ops batch per part, and can be re-run after every change. Get the helpers from the editor (standard library only; set `KERF_URL` and, if the server has one, `KERF_TOKEN`):
+
+```bash
+curl -s <editor>/api/script -o kerf_script.py      # add -H 'Authorization: Bearer <token>' if needed
+```
+
+```python
+import kerf_script as k
+T = 18
+tab = k.new_tab(1200, 900)                 # its own tab; the user's active tab stays active
+k.post([{"op": "clear"}, {"op": "set_title", "title": "Shelf"},
+        k.layer("HARDWARE", "#6b7280", "dotted", export=False)], "Setup", tab)
+
+# Side panel in its own coordinates: x = depth from the front, y = height (y UP)
+side = k.build(k.rect(0, 0, 300, 700), {2: ("fillet", 40), 3: ("fillet", 40)})
+slot = k.build(k.rect(40, 300, 260, 300 + T + 0.4), {i: ("dog", 3.2) for i in range(4)})
+f, m = k.place(k.bounds(side), 15, 15)     # footprint top-left on the drawing; turn=90/180/270 to rotate
+k.post(k.part("Side L", [("path", "CUT_OUTSIDE", {"d": k.to_path(side, f)}),
+                         ("path", "CUT_INSIDE", {"d": k.to_path(slot, f)})],
+              assembly=k.assembly(m, T, (0, 90, 0), (-209, 0, 150))), "Side L", tab)
+print(k.check(tab))                        # the same checks as check_cnc
+k.save("shelf/shelf", tab)
+```
+
+- **Always pass `tab`.** Without it, ops land on whichever tab is active, and the user or another session may have switched.
+- **Rebuild from scratch:** start with `clear`, and add layers with `k.layer(...)`, which updates a layer that already exists. Then re-running is always safe.
+- **Keep every change in the script** (holes, engravings, tweaks). An edit made only in the editor is lost the next time the script runs. Cache the output of optional tools (e.g. fontTools glyph outlines for engraved text) next to the script, so it still runs without them.
+- **Draw parts in their own coordinates, y up**, the way the 3D recipe expects (side panel = depth × height, flat board = width × depth with the front at y = 0). `place()` returns the drawing mapping and the matching `matrix` together, so the 2D layout and the 3D placement never drift apart. A part turned 180° to nest better keeps the right matrix.
+- **Outlines:** `build(vertices, corners)`: `("fillet", r)` rounds a corner, `("dog", r)` adds a dog-bone, `auto_dog=r` dog-bones every concave corner (tenon shoulders), and an `("arc", centre, via)` item between two vertices makes that edge an arc. `to_path()` computes the arc flags; never write them by hand. Corner indices count vertices only, not arc items.
+- **Check before you look:** `k.bounds(outline)` must match the size you meant (an off-by-one corner index or a wrong arc shows up here). `k.world_box(asm, [f(p) for p in k.points(outline)])` gives the part's world box through its real matrix, so you can confirm every part's X/Y/Z range. Then `k.check(tab)` and screenshots.
+

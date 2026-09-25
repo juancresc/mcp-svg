@@ -36,7 +36,12 @@ mcp-server/
   export.py    SVG geometry → DXF (ezdxf; LWPOLYLINE with arc bulges, CIRCLE), DXF → SVG import,
                per-entity part files + zip (nesting software), bounding boxes.
   server.py    MCP tools + HTTP API (aiohttp) — thin wrappers over Store.
-  tests/       pytest: test_store.py (model/store/exports), test_tools.py (MCP tools)
+  kerf_script.py  stdlib-only helpers for parametric generator scripts (HTTP calls, outlines with
+               fillets/dog-bones/arcs, place() → drawing mapping + assembly matrix, world_box);
+               served at GET /api/script so remote Claude sessions can use it. Local generators import it.
+  guide.md     the design guide (get_guide, /api/guide); its Parametric scripts example is run by tests.
+  tests/       pytest: test_store.py (model/store/exports), test_tools.py (MCP tools),
+               test_script.py (kerf_script + the guide example)
 web/js/
   state.js     client state, event bus, entity helpers (itemAt, descendants, selectItems, context)
   api.js       HTTP client; mutations serialized; long-poll sync; background image cache
@@ -89,7 +94,8 @@ The compose file publishes both ports on 127.0.0.1 only. The `local_only` middle
 - **Editing:** `POST /api/ops {ops,label}` · `POST /api/undo|redo`.
 - **Files and tabs:** `POST /api/file/new|open|close|activate|revert|save|saved-local|mkdir|delete|import` (import takes `svg | dxf (base64) | project`) · `GET /api/files` · `GET /api/browse?folder=`.
 - **Exports:** `GET /api/export/{cnc|cnc-dxf|parts|file|project}`.
-- **Other:** `POST /api/selection` · `POST /api/screenshot` · `GET /api/background`.
+- **Scripts:** `GET /api/script` (kerf_script.py) · `GET /api/check?tab=` (check_cnc for any tab). `add_layer` takes `exist_ok` (update instead of failing) so generators can re-run.
+- **Other:** `POST /api/selection` · `POST /api/screenshot` · `GET /api/background` · `GET /api/guide`.
 
 ## MCP tools (server `kerf`, SSE on :8766)
 
