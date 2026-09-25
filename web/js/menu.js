@@ -5,7 +5,7 @@ import { icons, esc } from './ui.js';
 import * as canvas from './canvas.js';
 import * as actions from './actions.js';
 import { connectDialog } from './connect.js';
-import { addLayer } from './panels.js';
+import { addLayer, deleteLayer } from './panels.js';
 
 const mac = /Mac|iPhone|iPad/.test(navigator.platform);
 const MOD = mac ? '⌘' : 'Ctrl+';
@@ -83,6 +83,7 @@ const MENUS = [
   ]],
   ['Layer', [
     ['New layer…', addLayer, SHIFT + MOD + 'N'],
+    [() => `Delete layer “${app.activeLayer}”…`, () => deleteLayer(), null, () => (app.doc?.layers.length || 0) > 1],
     '-',
     ['Reference image to trace over…', actions.setBackground],
     ['Remove reference image', actions.removeBackground, null, () => !!app.doc?.background],

@@ -43,6 +43,7 @@ export function renderLayers() {
         ${l.depth ? `<span class="no-export" style="color:#6d28d9;border-color:#d8c8f5;background:#f5f0ff" title="Partial-depth cut (pocket) from the top face">${l.depth} mm</span>` : ''}
         <svg class="style-mini" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="${esc(l.color)}" stroke-width="2" stroke-dasharray="${esc(screenDashOf(l) || 'none')}" stroke-linecap="round"/></svg>
         <span class="layer-count">${counts[l.name] || 0}</span>
+        <button class="icon-btn small layer-del" data-act="delete" title="Delete layer">${icons.trash}</button>
         <button class="icon-btn small" data-act="expand" title="Details: description, line style, export, order">${open ? icons.chevronDown : icons.chevron}</button>
       </div>
       ${open ? `<div class="layer-details">
@@ -144,7 +145,8 @@ layersBox.addEventListener('input', (e) => {
   if (e.target.dataset.act === 'color') e.target.parentElement.style.background = e.target.value;
 });
 
-async function deleteLayer(layer) {
+export async function deleteLayer(layer = app.doc?.layers.find(l => l.name === app.activeLayer)) {
+  if (!layer) return;
   const doc = app.doc;
   if (doc.layers.length === 1) return toast('A document needs at least one layer', 'error');
   const n = doc.elements.filter(e => e.layer === layer.name).length;

@@ -205,6 +205,10 @@ main { display: flex; flex: 1; min-height: 0; }
 .layer.hidden .layer-name { color: #aaa; }
 .style-mini { width: 22px; height: 10px; flex-shrink: 0; }
 .layer-count { font-size: 10px; color: var(--muted); min-width: 18px; text-align: right; }
+.layer-del { opacity: 0; }
+.layer-row:hover .layer-del, .layer-del:focus-visible { opacity: .7; }
+.layer-row .layer-del:hover { opacity: 1; color: #c0392b; }
+@media (hover: none) { .layer-del { opacity: .5; } }
 .no-export { font-size: 9px; color: #b07b00; border: 1px solid #f0d58a; background: #fff8e1; border-radius: 3px; padding: 0 3px; }
 .layer-details { padding: 4px 8px 8px 30px; display: grid; gap: 6px; }
 .layer-details textarea {
