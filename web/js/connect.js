@@ -58,6 +58,18 @@ Don't discard my unsaved work or close my tabs without asking.`,
   ];
 }
 
+/** Clipboard API, or the old select + execCommand way (works on plain http too). */
+async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall through */ }
+  const ta = Object.assign(document.createElement('textarea'), { value: text });
+  ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+  (document.querySelector('dialog[open]') || document.body).append(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  return ok;
+}
+
 // Minimal Markdown → HTML for the guide (headings, lists, tables, code, bold)
 function md(text) {
   const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
@@ -95,8 +107,16 @@ function md(text) {
 export async function guideDialog() {
   const r = await fetch('/api/guide');
   if (!r.ok) return toast("Couldn't load the guide", 'error');
-  await modal({ title: 'Kerf guide', html: `<div class="guide">${md(await r.text())}</div>`,
-                buttons: [{ label: 'Close', value: true, kind: 'primary' }] });
+  const text = await r.text();
+  await modal({
+    title: 'Kerf guide', html: `<div class="guide">${md(text)}</div>`,
+    buttons: [{ label: 'Copy (Markdown)', value: 'copy', left: true }, { label: 'Close', value: true, kind: 'primary' }],
+    setup: (form) => form.querySelector('.dlg-actions .left').addEventListener('click', async (e) => {
+      e.stopPropagation();                   // copy without closing the dialog
+      if (await copyText(text)) toast('Guide copied — paste it into any Claude chat', 'ok');
+      else toast("Couldn't copy: select the text and press ⌘C / Ctrl+C", 'error');
+    }),
+  });
 }
 
 export async function connectDialog() {
