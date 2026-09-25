@@ -5,6 +5,15 @@ import { modal, toast, esc, copyText } from './ui.js';
 
 const q = (s) => `'${s.replace(/'/g, `'\\''`)}'`;   // shell single-quote
 
+// What to say to Claude once it's connected (the design request goes in the blanks)
+const ASK = `My CNC's working area: ___ × ___ mm (e.g. 1220 × 610). Material: 18 mm birch plywood.
+I want to design: ___ (what it is, overall size, who uses it).`;
+const MCP_PROMPT = (editor) => `You're connected to my Kerf CNC editor (MCP server "kerf"); I watch every change live at ${editor}
+First call get_guide and follow it (workflow, layers, 3D placement recipes, CNC rules).
+${ASK}
+Ask me anything essential before drawing. Build one part per apply_ops batch, lay the parts out for my machine,
+check with check_cnc and take_screenshot (2d, 3d, 3d-exploded), then save_document and give me the link.`;
+
 function snippets({ editor_url, api_url, mcp_url, token }) {
   const auth = token ? `Bearer ${token}` : null;
   const curlAuth = token ? ` -H ${q('Authorization: ' + auth)}` : '';
@@ -15,21 +24,26 @@ function snippets({ editor_url, api_url, mcp_url, token }) {
       id: 'code', label: 'Claude Code',
       intro: 'Run this in a terminal once. Then start <code>claude</code> and check the connection with <code>/mcp</code>.',
       text: `claude mcp add --transport sse kerf ${mcp_url}${auth ? ` --header ${q('Authorization: ' + auth)}` : ''}`,
+      prompt: MCP_PROMPT(editor_url),
     },
     {
       id: 'project', label: '.mcp.json',
       intro: 'Or save this as <code>.mcp.json</code> in a project folder, so everyone who runs Claude Code there gets the editor.',
       text: json({ mcpServers: { kerf: server } }),
+      prompt: MCP_PROMPT(editor_url),
     },
     {
       id: 'desktop', label: 'Claude Desktop',
       intro: 'Claude Desktop → Settings → Developer → Edit Config (<code>claude_desktop_config.json</code>). Add this and restart it. It needs Node.js: <code>mcp-remote</code> bridges the SSE server.',
       text: json({ mcpServers: { kerf: { command: 'npx', args: ['-y', 'mcp-remote', mcp_url, ...(auth ? ['--header', `Authorization: ${auth}`] : [])] } } }),
+      prompt: MCP_PROMPT(editor_url),
     },
     {
       id: 'curl', label: 'Prompt (curl, no MCP)',
       intro: 'No MCP set up? Paste this into Claude (any version that can run shell commands). It explains the HTTP API.',
-      text: `You can drive my Kerf CNC editor over HTTP with curl. I watch every change live at ${editor_url}
+      text: `${ASK}
+
+You can drive my Kerf CNC editor over HTTP with curl. I watch every change live at ${editor_url}
 Units: 1 = 1 mm. Every POST needs -H 'Content-Type: application/json'${token ? `, and every request needs${curlAuth}` : ''}.
 FIRST read the design guide (workflow, layers, 3D placement recipes, CNC rules):
   curl -s${curlAuth} ${api_url}/guide
@@ -124,7 +138,11 @@ export async function connectDialog() {
     html: `<div class="connect">
       <div class="seg connect-tabs">${items.map((it, i) => `<button type="button" class="btn ${i === 0 ? 'on' : ''}" data-snip="${i}">${esc(it.label)}</button>`).join('')}</div>
       <p class="hint connect-intro"></p>
-      <div class="connect-code"><pre></pre><button type="button" class="btn primary" data-copy>Copy</button></div>
+      <div class="connect-code" data-block="text"><pre></pre><button type="button" class="btn primary" data-copy="text">Copy</button></div>
+      <div class="connect-prompt">
+        <p class="hint"><b>2. Then paste this into Claude</b> — fill in the blanks (___) first:</p>
+        <div class="connect-code" data-block="prompt"><pre></pre><button type="button" class="btn primary" data-copy="prompt">Copy</button></div>
+      </div>
       <p class="hint">Editor: <code>${esc(info.editor_url)}</code> · MCP (SSE): <code>${esc(info.mcp_url)}</code>
         ${info.token ? '<br><b>These snippets contain your access token.</b> Only share them with people who may edit your files.' : ''}
         ${local ? '<br>This editor only answers on this computer. To use it from elsewhere, deploy it with <code>KERF_PUBLIC_URL</code> and <code>KERF_TOKEN</code> (see the README).' : ''}</p>
@@ -134,24 +152,23 @@ export async function connectDialog() {
       const show = (i) => {
         current = i;
         form.querySelectorAll('.connect-tabs button').forEach((b, j) => b.classList.toggle('on', j === i));
-        form.querySelector('.connect-intro').innerHTML = items[i].intro;
-        form.querySelector('.connect-code pre').textContent = items[i].text;
+        form.querySelector('.connect-intro').innerHTML = (items[i].prompt ? '<b>1. Set up</b> — ' : '') + items[i].intro;
+        form.querySelector('[data-block="text"] pre').textContent = items[i].text;
+        form.querySelector('.connect-prompt').hidden = !items[i].prompt;
+        form.querySelector('[data-block="prompt"] pre').textContent = items[i].prompt || '';
       };
       form.querySelector('.connect-tabs').addEventListener('click', (e) => {
         const b = e.target.closest("[data-snip]");
         if (b) show(+b.dataset.snip);
       });
-      form.querySelector('[data-copy]').addEventListener('click', async () => {
-        try {
-          await navigator.clipboard.writeText(items[current].text);
-          toast('Copied', 'ok');
-        } catch (_) {   // clipboard needs https or localhost: select the text instead
-          const range = document.createRange();
-          range.selectNodeContents(form.querySelector('.connect-code pre'));
-          getSelection().removeAllRanges(); getSelection().addRange(range);
-          toast('Press ⌘C / Ctrl+C to copy the selected text');
-        }
-      });
+      form.querySelectorAll('[data-copy]').forEach(btn => btn.addEventListener('click', async () => {
+        const which = btn.dataset.copy;
+        if (await copyText(items[current][which])) return toast(which === 'prompt' ? 'Prompt copied — fill in the blanks in Claude' : 'Copied', 'ok');
+        const range = document.createRange();       // no clipboard: select the text instead
+        range.selectNodeContents(form.querySelector(`[data-block="${which}"] pre`));
+        getSelection().removeAllRanges(); getSelection().addRange(range);
+        toast('Press ⌘C / Ctrl+C to copy the selected text');
+      }));
       show(0);
     },
   });
