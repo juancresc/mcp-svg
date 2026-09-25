@@ -6,7 +6,8 @@ Settings: KERF_URL (default http://localhost:8765), KERF_TOKEN (only if the serv
 
 Draw each part in its own coordinates (x right, y UP, mm), e.g. a side panel as depth × height;
 place() maps it into the drawing and returns the matching assembly matrix. Arc flags are
-computed for you. See the "Parametric scripts" section of the guide (GET /api/guide).
+computed for you. Drawing builds a whole project (parts, 3D placement, checks, sheets, notes)
+and sends it as one undo step. See the "Parametric scripts" section of the guide (GET /api/guide).
 """
 import json
 import math
@@ -61,6 +62,11 @@ def save(file, tab):
 def check(tab):
     """The same pre-cut checks as the check_cnc tool: {"ok", "issues", ...}."""
     return call(f"check?tab={tab}")
+
+
+def assembly_report(tab):
+    """The same as the describe_assembly tool: every placed part's world box, overlaps, …"""
+    return call(f"assembly?tab={tab}")
 
 
 def layer(name, color, line_style="solid", export=True, depth=None, description=""):
@@ -235,3 +241,159 @@ def world_box(asm, pts):
         for z in (0, asm["thickness"]):
             out.append([sum(R[i][k] * (lx, ly, z)[k] for k in range(3)) + asm["position"][i] for i in range(3)])
     return tuple(min(p[i] for p in out) for i in range(3)) + tuple(max(p[i] for p in out) for i in range(3))
+
+
+def circle(cx, cy, r):
+    """A full circle as an outline (for to_path, points, holes or round parts)."""
+    return [("M", (cx - r, cy)), ("A", (cx + r, cy), (cx, cy), (cx, cy - r)),
+            ("A", (cx - r, cy), (cx, cy), (cx, cy + r))]
+
+
+# ── A whole project in one batch ─────────────────────────────────────────────
+
+class Drawing:
+    """Build a project and send it as ONE undo step; re-running rebuilds it in place.
+
+        d = Drawing("Shelf", thickness=18)
+        d.part("Side L", side, holes=[slot], rotation=(0, 90, 0), position=(-209, 0, 150))
+        d.expect("Side L", (-209, 0, -150, -191, 700, 150))     # world box, checked before sending
+        d.arrange(notes=["Cut order: holes → outlines"])        # the server packs the sheets
+        tab = d.run()                                           # CLI: [tab] [--dry] [--save FILE]
+
+    Parts are drawn in their own coordinates (x right, y UP, mm), e.g. a side panel as depth ×
+    height. Without at=, parts are put in a row and arrange() packs them onto sheets; their 3D
+    placement doesn't depend on where they end up on the drawing.
+    """
+
+    def __init__(self, title, thickness=18, material=None, sheet=(2440, 1220), tool=6):
+        self.title, self.thickness = title, thickness
+        mat = {"name": f"Birch plywood {thickness:g} mm", "type": "plywood", "color": "#e3c592",
+               "thickness": thickness, "sheet_width": sheet[0], "sheet_height": sheet[1], "tool_diameter": tool}
+        mat.update(material or {})
+        self.ops = [{"op": "clear"}, {"op": "set_title", "title": title}, {"op": "set_material", "material": mat}]
+        self.parts = {}                 # name → {"id": "$ref", "assembly", "points" (drawing coords)}
+        self.problems = []
+        self.report = None
+        self._cursor, self._far = 20.0, [0.0, 0.0]
+        self._arranged = False
+
+    def layer(self, name, color, line_style="solid", export=True, depth=None, description=""):
+        self.ops.append(layer(name, color, line_style, export, depth, description))
+
+    def op(self, op):
+        """Any other op (it can use "as"/"$name" references)."""
+        self.ops.append(op)
+
+    def part(self, name, outline, holes=(), pockets=None, circles=(), rotation=None, position=(0, 0, 0),
+             qty=1, color=None, thickness=None, move=None, label=True, at=None, turn=0, layer="CUT_OUTSIDE",
+             matrix=None):
+        """One part: outline (build() segments or a vertex list) on `layer`, holes (CUT_INSIDE),
+        pockets {layer: [outlines]}, circles [((x, y), diameter[, layer])], a name label on NOTES,
+        qty and — when rotation is given — its 3D placement (see the guide's recipes). at=(X, Y)
+        puts the footprint's top-left there on the drawing (turn 0/90/180/270), else it goes in a
+        row for arrange(). Returns the entity reference ("$name") for later ops."""
+        if name in self.parts:
+            raise ValueError(f"Two parts called {name!r}")
+        seg = lambda o: o if o and o[0][0] == "M" else build(o)
+        outline = seg(outline)
+        box = bounds(outline)
+        if at is None:
+            at, self._cursor = (self._cursor, 20.0), self._cursor + (box[3] - box[1] if turn % 180 else box[2] - box[0]) + 30
+        f, m = place(box, at[0], at[1], turn)
+        key = f"p{len(self.parts)}"
+        pieces = [(layer, {"d": to_path(outline, f)})]
+        pieces += [("CUT_INSIDE", {"d": to_path(seg(h), f)}) for h in holes]
+        for lay, outs in (pockets or {}).items():
+            pieces += [(lay, {"d": to_path(seg(o), f)}) for o in outs]
+        for c in circles:
+            (x, y), dia = c[0], c[1]
+            cx, cy = f((x, y))
+            pieces.append((c[2] if len(c) > 2 else "CUT_INSIDE", {"cx": round(cx, 3), "cy": round(cy, 3), "r": dia / 2}))
+        refs = []
+        for i, (lay, attrs) in enumerate(pieces):
+            refs.append(f"${key}.{i}")
+            self.ops.append({"op": "add_element", "as": f"{key}.{i}", "tag": "circle" if "r" in attrs else "path",
+                             "layer": lay, "attrs": dict(attrs, fill="none")})
+        if label:
+            lx, ly = f(label if isinstance(label, tuple) else ((box[0] + box[2]) / 2, (box[1] + box[3]) / 2))
+            size = max(8, min(20, (min(box[2] - box[0], box[3] - box[1])) / 4))
+            refs.append(f"${key}.label")
+            self.ops.append({"op": "add_element", "as": f"{key}.label", "tag": "text", "layer": "NOTES",
+                             "text": name.upper() + (f" ×{qty}" if qty > 1 else ""),
+                             "attrs": {"x": round(lx, 1), "y": round(ly + size / 3, 1), "font-size": round(size, 1),
+                                       "text-anchor": "middle"}})
+        self.ops.append({"op": "group", "as": key, "items": refs, "name": name})
+        upd = {"op": "update_group", "id": f"${key}", "qty": qty}
+        asm = None
+        if rotation is not None:
+            asm = {"matrix": [round(v, 6) for v in (matrix or m)], "rotation": list(rotation), "position": list(position)}
+            if thickness:
+                asm["thickness"] = thickness
+            if color:
+                asm["color"] = color
+            if move:
+                asm["move"] = move
+            upd["assembly"] = asm
+        self.ops.append(upd)
+        pts = [f(p) for p in points(outline)]
+        self._far = [max(self._far[0], *(p[0] for p in pts)), max(self._far[1], *(p[1] for p in pts))]
+        self.parts[name] = {"id": f"${key}", "assembly": asm, "points": pts, "thickness": thickness or self.thickness}
+        return f"${key}"
+
+    def world_box(self, name):
+        """(x0, y0, z0, x1, y1, z1) of a placed part in world mm, computed locally."""
+        p = self.parts[name]
+        return world_box(dict(p["assembly"], thickness=p["thickness"]), p["points"])
+
+    def expect(self, name, box, tol=0.5):
+        """Check a part lands where you meant (world box, mm); failures stop send()/run()."""
+        got = self.world_box(name)
+        if any(abs(a - b) > tol for a, b in zip(got, box)):
+            self.problems.append(f"{name} lands at {tuple(round(v, 1) for v in got)}, expected {tuple(box)}")
+
+    def arrange(self, notes=(), sheet=None, margin=15, gap=20, rotate=True):
+        """Let the server pack all parts onto sheets (default: the material's), draw the sheets,
+        and put the notes lines under them. Call it after the last part."""
+        op = {"op": "arrange", "margin": margin, "gap": gap, "rotate": rotate, "as": "arrange"}
+        if sheet:
+            op["sheet_width"], op["sheet_height"] = sheet
+        if notes:
+            op["notes"] = list(notes)
+        self.ops.append(op)
+        self._arranged = True
+
+    def send(self, tab=None, label=None):
+        """Post everything as one undo step to `tab` (rebuilt in place) or a new tab; returns the tab."""
+        if self.problems:
+            raise SystemExit("Checks failed:\n  " + "\n  ".join(self.problems))
+        ops = list(self.ops)
+        if not self._arranged:
+            ops.insert(1, {"op": "set_size", "width": round(self._far[0] + 40), "height": round(self._far[1] + 40)})
+        tab = tab or new_tab()
+        results = post(ops, label or self.title, tab)
+        at = [i for i, o in enumerate(ops) if o.get("op") == "arrange"]
+        self.report = results[at[-1]] if at else None
+        return tab
+
+    def run(self, argv=None):
+        """Command line: `script.py [tab] [--dry] [--save FILE]`. --dry only runs the local checks;
+        a tab id rebuilds that tab in place; --save writes the .kerf. Prints the layout and check_cnc."""
+        import sys
+        args = list(sys.argv[1:] if argv is None else argv)
+        save_to = args[args.index("--save") + 1] if "--save" in args else None
+        tab = next((a for a in args if not a.startswith("-") and a != save_to), None)
+        if self.problems:
+            raise SystemExit("Checks failed:\n  " + "\n  ".join(self.problems))
+        print(f"{self.title}: {len(self.parts)} parts, {len(self.ops)} ops, local checks ok")
+        if "--dry" in args:
+            return None
+        tab = self.send(tab)
+        if self.report:
+            print(f"sheets: {self.report['sheets']} · " + " · ".join(f"{k}: {', '.join(v)}" for k, v in self.report["per_sheet"].items()))
+        c = check(tab)
+        print("check_cnc: ok" if c["ok"] else "check_cnc:\n  " + "\n  ".join(i["message"] for i in c["issues"][:30]))
+        if save_to:
+            save(save_to, tab)
+            print(f"saved {save_to} · {URL}/?open={save_to if save_to.endswith('.kerf') else save_to + '.kerf'}")
+        print(f"tab {tab}")
+        return tab

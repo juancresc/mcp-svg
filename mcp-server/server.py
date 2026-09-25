@@ -22,6 +22,8 @@ from mcp.server.fastmcp import FastMCP, Image
 from document import DocError, LINE_STYLES
 from export import cnc_dxf, dxf_to_svg, parts_zip, part_files, bbox, parse_transform
 from store import Store
+import layout
+from layout import move_attrs
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(message)s")
 logging.getLogger("aiohttp.access").setLevel(logging.WARNING)
@@ -62,17 +64,20 @@ INSTANCE_ID = uuid.uuid4().hex
 GUIDE = APP_DIR / "guide.md"             # the design guide: get_guide tool, /api/guide, Help menu
 GUIDE_TEXT = GUIDE.read_text(encoding="utf-8") if GUIDE.exists() else "Guide not found."
 INSTRUCTIONS = f"""Kerf — a CNC design editor shared with the user (they see every change live at {EDITOR_URL}).
-- BEFORE designing anything, call get_guide once: workflow, layers, 3D placement recipes
-  (rotation/matrix per kind of part), CNC rules and gotchas. It saves a lot of trial and error.
-- Units: 1 SVG unit = 1 mm. Stroke colour/line style come from the element's LAYER, never pass them.
-- Layers: CUT_OUTSIDE = part outlines, CUT_INSIDE = holes/slots/windows, ENGRAVE = partial depth,
-  NOTES = labels/dimensions (never cut), HARDWARE = bought parts for the 3D preview (never cut).
-- Entities (groups) = parts: group each part's outline + holes (group_elements), set qty and a 3D
-  placement (update_group) so export_parts and the 3D preview work.
-- Several documents can be open (tabs); all tools act on the active tab (list_tabs / switch_tab).
-- get_selection tells you what the user selected ("this part"); set_selection highlights for them.
-- Check your work with take_screenshot (view "2d", "3d", "3d-exploded"). Prefer apply_ops (one undo per part).
-- Lay the parts out on full 2440 × 1220 sheets (outlines on NOTES) unless the user gives a machine or stock size.
+- BEFORE designing anything, call get_guide once: workflow, layers, 3D placement recipes, CNC rules.
+- Units: 1 unit = 1 mm. Stroke colour/line style come from the element's LAYER, never pass them.
+- Layers: CUT_OUTSIDE = part outlines, CUT_INSIDE = holes/slots, a layer with `depth` = pockets,
+  NOTES = labels/dimensions (never cut), HARDWARE (export=false) = bought parts for the 3D preview.
+- One part = one apply_ops batch: its shapes, then {{"op":"group","items":["$0","$1"],"name":…}},
+  then update_group with qty and assembly {{rotation, position}}. Give ops "as": "name" and refer
+  to them as "$name". Leave out assembly.matrix: it's set from the drawing (origin = bottom-left of
+  the part, y up) and follows the part when it's moved, turned or arranged.
+- Draw parts anywhere, then arrange_parts packs them onto stock sheets (default: the material's
+  sheet, 2440 × 1220) and draws the sheets. Their 3D placement doesn't change.
+- Verify with numbers first: check_cnc (cut problems, overlapping/too-close parts, off-sheet) and
+  describe_assembly (every part's world box in mm, overlaps). Then take_screenshot 2d / 3d.
+- More than ~5 parts or anything parametric: write a Python script with kerf_script (get_guide scripts).
+- Tools act on the active tab (list_tabs / switch_tab). get_selection = what the user selected.
 - Name the project (set_project_name); after save_document give the share link {EDITOR_URL}/?open=<file>.
 - Never discard the user's unsaved work or close their tabs without asking."""
 try:
@@ -109,8 +114,15 @@ def parse_json(value, what: str):
         raise DocError(f"Invalid JSON in {what}: {e}")
 
 
-def ids_arg(value: str) -> list[str]:
-    return [i.strip() for i in value.split(",") if i.strip()]
+def ids_arg(value) -> list[str]:
+    """Ids as a list or a comma-separated string."""
+    if isinstance(value, (list, tuple)):
+        return [str(i).strip() for i in value if str(i).strip()]
+    return [i.strip() for i in (value or "").split(",") if i.strip()]
+
+
+Ids = list[str] | str          # tool arguments: ["el-1", "g-2"] or "el-1,g-2"
+Obj = dict | str               # a JSON object, or the same as a JSON string
 
 
 def summary() -> dict:
@@ -333,13 +345,13 @@ def list_elements(layer: str = "") -> str:
 
 
 @tool
-def add_element(tag: str, attrs: str, text_content: str = "", layer: str = "") -> str:
+def add_element(tag: str, attrs: Obj, text_content: str = "", layer: str = "") -> str:
     """Add one element; coordinates in mm. Stroke colour/line style come from the layer.
     For many elements use add_svg (one call, one undo step).
 
     Args:
         tag: line, rect, circle, ellipse, text, path, polygon or polyline.
-        attrs: JSON object of SVG attributes, e.g. '{"x":10,"y":10,"width":200,"height":100}'.
+        attrs: SVG attributes, e.g. {"x": 10, "y": 10, "width": 200, "height": 100}.
         text_content: Text for <text> elements.
         layer: Layer name (default: first layer). See list_layers.
     """
@@ -367,13 +379,13 @@ def add_svg(markup: str, layer: str = "") -> str:
 
 
 @tool
-def update_element(element_id: str, attrs: str = "{}", text_content: str | None = None,
+def update_element(element_id: str, attrs: Obj = "{}", text_content: str | None = None,
                    layer: str = "") -> str:
     """Change an element's attributes (null or "" removes one), its text or its layer.
 
     Args:
         element_id: e.g. "el-12".
-        attrs: JSON object of attributes to set, e.g. '{"x": 120}'.
+        attrs: Attributes to set, e.g. {"x": 120}.
         text_content: New text for <text> elements.
         layer: Move the element to this layer.
     """
@@ -419,12 +431,12 @@ def list_groups() -> str:
 
 
 @tool
-def group_elements(items: str, name: str = "") -> str:
+def group_elements(items: Ids, name: str = "") -> str:
     """Group elements and/or groups into a named entity (e.g. one part = outline + holes on
     different layers). Items must share the same parent group. Returns the new group id.
 
     Args:
-        items: Comma-separated element/group ids, e.g. "el-1,el-2,g-3".
+        items: Element/entity ids, e.g. ["el-1", "el-2", "g-3"] (or "el-1,el-2,g-3").
         name: Entity name, e.g. "Lower frame A".
     """
     [gid] = store.apply([{"op": "group", "items": ids_arg(items), "name": name or None}])
@@ -439,22 +451,25 @@ def ungroup(group_id: str) -> str:
 
 
 @tool
-def update_group(group_id: str, name: str = "", qty: int = 0, assembly: str = "") -> str:
+def update_group(group_id: str, name: str = "", qty: int = 0, assembly: Obj | None = None) -> str:
     """Rename an entity, set how many to cut (qty), or set its 3D placement for the preview.
 
     Args:
         group_id: e.g. "g-2".
         name: New name.
         qty: Quantity to cut (≥ 1), used in part exports.
-        assembly: JSON placing the part in 3D, or "null" to clear:
-            {"matrix": [a,b,c,d,e,f],   # maps document 2D (mm) → part-local 2D profile coords
-             "thickness": 18,           # optional: omit for sheet parts to follow the material
-             "position": [x,y,z], "rotation": [rx,ry,rz],   # degrees, applied X,Y,Z
-             "color": "#e3c592", "move": {"param": "lift", "axis": [0,1,0]}}
-            World: X = width, Y = up, Z toward the viewer. The profile is extruded along +Z.
+        assembly: The part's 3D placement (replaces the old one), or "null" to remove it:
+            {"rotation": [rx,ry,rz],     # degrees, applied X, Y, Z (see get_guide placement)
+             "position": [x,y,z],        # where the part's local origin goes, world mm
+             "thickness": 18,            # optional: omit for sheet parts to follow the material
+             "color": "#e3c592", "move": {"param": "lift", "axis": [0,1,0]},
+             "matrix": [a,b,c,d,e,f]}    # optional: omitted = keep the current one, or for a new
+                                         # placement the drawing's bottom-left corner, y up;
+                                         # "auto" = recompute that from the drawing now
+            World: X = width, Y = up, Z toward the viewer. The profile is extruded along local +Z.
     """
     op = {"op": "update_group", "id": group_id, "name": name or None, "qty": qty or None}
-    if assembly:
+    if assembly not in (None, ""):
         op["assembly"] = parse_json(assembly, "assembly")
     store.apply([op])
     g = store.doc.group_by_id(group_id)
@@ -462,7 +477,7 @@ def update_group(group_id: str, name: str = "", qty: int = 0, assembly: str = ""
 
 
 @tool
-def set_params(params: str) -> str:
+def set_params(params: list | str) -> str:
     """Set the document's 3D preview parameters (sliders), e.g.
     '[{"name":"lift","label":"Desk height","min":0,"max":450,"step":50,"display_offset":720,"unit":"mm"}]'.
     Groups whose assembly has "move": {"param": "lift", "axis": [0,1,0]} slide with it."""
@@ -485,15 +500,15 @@ def get_selection() -> str:
 
 
 @tool
-def set_selection(items: str) -> str:
+def set_selection(items: Ids) -> str:
     """Select (highlight) elements and/or entities in the user's editor, e.g. to show what you
-    changed. Comma-separated ids ("el-3,g-2"); empty string clears."""
+    changed. Ids as a list or comma-separated ("el-3,g-2"); empty clears."""
     sel = store.set_selection(ids_arg(items))
     return json.dumps({"selected": len(sel)})
 
 
 @tool
-def measure(items: str) -> str:
+def measure(items: Ids) -> str:
     """Bounding boxes (mm) of elements/entities: x, y, width, height, centre — and of all of
     them together. Comma-separated ids ("g-1,el-7")."""
     d = store.doc
@@ -515,60 +530,25 @@ def _box(b):
 
 
 @tool
-def move_elements(items: str, dx: float, dy: float) -> str:
-    """Move elements/entities by (dx, dy) mm, as one undo step. Comma-separated ids.
-    Coordinates are updated directly (no transforms pile up)."""
-    d = store.doc
-    ids = []
-    for i in ids_arg(items):
-        ids += d.descendants(i) if i.startswith("g-") else [d.element(i).id]
-    store.apply([{"op": "update_element", "id": i, "attrs": move_attrs(d.element(i), dx, dy)} for i in ids], label="Move")
-    return json.dumps({"moved": len(ids), "version": store.version})
-
-
-def move_attrs(e, dx, dy) -> dict:
-    """Attribute patch moving an element by (dx, dy) — same rules as the editor (geometry.js)."""
-    a = e.attrs
-    n = lambda k: float(a.get(k, 0) or 0)
-    r = lambda v: round(v, 4)
-    if a.get("transform") or e.tag in ("path", "polygon", "polyline"):
-        import re as _re
-        t = a.get("transform", "")
-        m = _re.match(r"\s*translate\(\s*([-\d.e]+)(?:[\s,]+([-\d.e]+))?\s*\)\s*", t)
-        if m:
-            x, y = r(float(m.group(1)) + dx), r(float(m.group(2) or 0) + dy)
-            rest = t[m.end():].strip()
-            return {"transform": " ".join(p for p in (f"translate({x}, {y})" if (x or y) else "", rest) if p)}
-        return {"transform": " ".join(p for p in (f"translate({r(dx)}, {r(dy)})", t.strip()) if p)}
-    if e.tag == "line":
-        return {"x1": r(n("x1") + dx), "y1": r(n("y1") + dy), "x2": r(n("x2") + dx), "y2": r(n("y2") + dy)}
-    if e.tag in ("rect", "text"):
-        return {"x": r(n("x") + dx), "y": r(n("y") + dy)}
-    return {"cx": r(n("cx") + dx), "cy": r(n("cy") + dy)}
+def move_elements(items: Ids, dx: float, dy: float) -> str:
+    """Move elements/entities by (dx, dy) mm, as one undo step. Coordinates are updated directly
+    (no transforms pile up), and moved entities keep their 3D placement."""
+    n = store.apply([{"op": "move", "items": ids_arg(items), "dx": dx, "dy": dy}], label="Move")[0]
+    return json.dumps({"moved": n, "version": store.version})
 
 
 @tool
-def transform_elements(items: str, transform: str) -> str:
+def transform_elements(items: Ids, transform: str) -> str:
     """Apply an SVG transform to elements/entities (prepended to their own transform), one undo
-    step. Examples: "rotate(90 500 300)" (degrees about a point), "scale(-1 1) translate(-1000 0)"
-    (mirror), "translate(10 0)". Comma-separated ids."""
-    parse_transform(transform)   # validates
-    return _transform(items, transform, "Transform")
-
-
-def _transform(items, t, label):
-    d = store.doc
-    ids = []
-    for i in ids_arg(items):
-        ids += d.descendants(i) if i.startswith("g-") else [d.element(i).id]
-    ops = [{"op": "update_element", "id": i,
-            "attrs": {"transform": " ".join(x for x in (t, d.element(i).attrs.get("transform")) if x)}} for i in ids]
-    store.apply(ops, label=label)
-    return json.dumps({"changed": len(ids)})
+    step. Entities keep their 3D placement (only their spot on the sheet changes). Examples:
+    "rotate(90 500 300)" (degrees about a point), "scale(-1 1) translate(-1000 0)" (mirror),
+    "translate(10 0)"."""
+    n = store.apply([{"op": "transform", "items": ids_arg(items), "transform": transform}], label="Transform")[0]
+    return json.dumps({"changed": n})
 
 
 @tool
-def duplicate(items: str, dx: float = 10, dy: float = 10, name: str = "") -> str:
+def duplicate(items: Ids, dx: float = 10, dy: float = 10, name: str = "") -> str:
     """Copy elements/entities, offset by (dx, dy) mm. Each copied entity becomes a new entity
     (one level). Returns the new ids."""
     d = store.doc
@@ -591,7 +571,7 @@ def duplicate(items: str, dx: float = 10, dy: float = 10, name: str = "") -> str
 
 
 @tool
-def reorder(items: str, where: str = "front") -> str:
+def reorder(items: Ids, where: str = "front") -> str:
     """Bring elements/entities to the front or send them to the back of their layer
     (where = "front" | "back")."""
     d = store.doc
@@ -668,18 +648,24 @@ def list_files(folder: str = "") -> str:
 # ── MCP: power tools ───────────────────────────────────────
 
 @tool
-def apply_ops(ops: str, label: str = "") -> str:
-    """Run several editor operations atomically as ONE undo step (all or nothing). "$n" in
-    items/id/ids/group/parent refers to the result of operation n of this batch.
+def apply_ops(ops: list | str, label: str = "") -> str:
+    """Run several editor operations atomically as ONE undo step (all or nothing). Pass the ops
+    as a JSON list. Name an op with "as": "outline" and refer to its result as "$outline" in a
+    later op's items/id/ids/group/parent ("$n" = the result of op n also works).
     Ops: add_element{tag,attrs,text,layer,group} · update_element{id,attrs,text,layer} ·
     remove_elements{ids} · reorder_element{id,where} · group{items,name,parent} · ungroup{id} ·
-    update_group{id,name,qty,assembly} · add_layer{name,color,line_style,export,description,depth} ·
-    update_layer{name,...} · remove_layer{name,move_to} · set_size{width,height} ·
-    set_material{material} · set_title{title} · set_params{params} · import_svg{svg,layer} · clear.
-    Example — a plate with a hole, grouped, in one step:
-    [{"op":"add_element","tag":"rect","layer":"CUT_OUTSIDE","attrs":{"x":0,"y":0,"width":100,"height":50}},
-     {"op":"add_element","tag":"circle","layer":"CUT_INSIDE","attrs":{"cx":20,"cy":25,"r":4}},
-     {"op":"group","items":["$0","$1"],"name":"Plate"}]"""
+    set_group{items,group} · update_group{id,name,qty,assembly} ·
+    move{items,dx,dy} · transform{items,transform} (entities keep their 3D placement) ·
+    arrange{sheet_width,sheet_height,margin,gap,rotate,notes} (see arrange_parts) ·
+    add_layer{name,color,line_style,export,description,depth,exist_ok} · update_layer{name,...} ·
+    remove_layer{name,move_to} · set_size{width,height} · set_material{material} · set_title{title} ·
+    set_params{params} · import_svg{svg,layer} · clear.
+    Example: a plate with two holes as one part, placed flat in 3D:
+    [{"op":"add_element","as":"plate","tag":"rect","layer":"CUT_OUTSIDE","attrs":{"x":0,"y":0,"width":300,"height":200,"rx":10,"fill":"none"}},
+     {"op":"add_element","as":"h1","tag":"circle","layer":"CUT_INSIDE","attrs":{"cx":30,"cy":30,"r":4,"fill":"none"}},
+     {"op":"add_element","as":"h2","tag":"circle","layer":"CUT_INSIDE","attrs":{"cx":270,"cy":30,"r":4,"fill":"none"}},
+     {"op":"group","as":"part","items":["$plate","$h1","$h2"],"name":"Plate"},
+     {"op":"update_group","id":"$part","qty":1,"assembly":{"rotation":[-90,0,0],"position":[-150,0,100]}}]"""
     results = store.apply(parse_json(ops, "ops"), label or None)
     return json.dumps({"results": results, "version": store.version})
 
@@ -726,18 +712,24 @@ def describe_entity(entity: str) -> str:
     from export import element_shapes
     holes = sorted({round(2 * s[3], 2) for e in els if d.layer(e.layer).export
                     for s in element_shapes(e, None) if s[0] == "circle"})
+    world = None
+    if g.assembly:
+        world = next((p["box"] for p in layout.assembly_report(d)["parts"] if p["id"] == g.id), None)
     return json.dumps({"id": g.id, "name": g.name, "qty": g.qty, "parent": g.parent,
                        "children": [c.id for c in d.groups if c.parent == g.id],
                        "bounds_mm": _box(bbox(els)) if els else None, "shapes_per_layer": by_layer,
-                       "hole_diameters_mm": holes, "assembly": g.assembly})
+                       "hole_diameters_mm": holes, "assembly": g.assembly,
+                       "world_box_mm": world})
 
 
 @tool
 def check_cnc() -> str:
-    """Pre-cut checks on the active document. Reports issues with element ids (pass them to
+    """Pre-cut checks on the active document. Reports issues with element/entity ids (pass them to
     set_selection to show the user): open contours on cut layers, holes smaller than the tool,
     duplicate shapes (cut twice), text on cut layers, shapes outside the document, cut shapes not
-    in any entity, entities without an outline, and parts that don't fit the material sheet."""
+    in any entity, entities without an outline, parts bigger than the material sheet, parts that
+    overlap or are closer than the tool diameter, and parts not on a sheet (after arrange_parts).
+    `warnings` (not blocking): parts left out of the 3D assembly."""
     return json.dumps(cnc_issues(store.doc))
 
 
@@ -785,7 +777,53 @@ def cnc_issues(d) -> dict:
             w, h = b[2] - b[0], b[3] - b[1]
             if not ((w <= sw and h <= sh) or (w <= sh and h <= sw)):
                 add("bigger_than_sheet", [g.id], f"Entity '{g.name}' ({w:.0f} × {h:.0f}) doesn't fit a {sw:g} × {sh:g} sheet")
-    return {"ok": not issues, "issues": issues[:200], "count": len(issues), "tool_diameter": tool_d}
+    issues += layout.layout_issues(d, tool_d)
+    warnings = []
+    if any(g.assembly for g in d.groups):
+        for g in layout.unplaced_pieces(d):
+            warnings.append({"kind": "not_in_3d", "ids": [g.id],
+                             "message": f"'{g.name}' has no 3D placement: it won't show in the 3D preview"})
+    return {"ok": not issues, "issues": issues[:200], "count": len(issues), "tool_diameter": tool_d,
+            **({"warnings": warnings[:100]} if warnings else {})}
+
+
+@tool
+def arrange_parts(sheet_width: float = 0, sheet_height: float = 0, margin: float = 15, gap: float = 20,
+                  rotate: bool = True, notes: list[str] | str = "") -> str:
+    """Pack every part (each entity that is one piece of stock: it has cut shapes, its
+    sub-entities don't) onto stock sheets, as one undo step:
+    largest first, turned 90° when that fits better, as few sheets as possible. Draws each sheet
+    with a label on the SHEETS layer (never cut, redrawn every time), puts parts bigger than a
+    sheet in a row underneath, and resizes the document. Every part keeps its 3D placement.
+    Packs bounding boxes: hand-nest odd shapes afterwards (move_elements / transform_elements),
+    then check_cnc reports overlaps and parts off the sheets.
+
+    Args:
+        sheet_width: Stock width in mm (default: the material's sheet, see set_material).
+        sheet_height: Stock height in mm (default: the material's sheet).
+        margin: Clamp margin inside each sheet's edge, mm.
+        gap: Space between parts, mm (at least the tool diameter).
+        rotate: Allow turning parts 90° (turn it off for grain direction).
+        notes: Lines for the notes block under the sheets (cut order, hardware, assembly). They
+            go into a "Notes" entity on NOTES, which replaces the previous one; without notes an
+            existing "Notes" entity is just moved under the sheets.
+    """
+    op = {"op": "arrange", "sheet_width": sheet_width or None, "sheet_height": sheet_height or None,
+          "margin": margin, "gap": gap, "rotate": rotate}
+    if notes:
+        op["notes"] = notes if isinstance(notes, list) else notes.split("\n")
+    return json.dumps(store.apply([op], label="Arrange on sheets")[0])
+
+
+@tool
+def describe_assembly(threshold: float = 20) -> str:
+    """The 3D assembly in numbers, to check placements without a screenshot: every placed part's
+    world box [x0, y0, z0, x1, y1, z1] and size in mm (X = width, Y = up, Z = toward the viewer),
+    the whole model's box, parts with no 3D placement, parts below the floor (y < 0), and clashes:
+    pairs of parts where more than `threshold` % of one part's material is inside the other's
+    (two parts in the same spot, or one sunk into another). Joints (tenons, dados, dowels in
+    holes) stay well below that. Compare the boxes with where each part should be."""
+    return json.dumps(layout.assembly_report(store.doc, threshold))
 
 
 @mcp.prompt()
@@ -794,20 +832,20 @@ def design_part(description: str) -> str:
     return (f"Design this part in the Kerf editor: {description}\n"
             "1. get_document_info; set_material if the material/thickness is known.\n"
             "2. Draw with apply_ops (outline on CUT_OUTSIDE, holes/slots on CUT_INSIDE, pockets on a layer with depth), "
-            "grouping the part in the same batch (\"$n\" references).\n"
+            "grouping the part in the same batch (\"as\" names + \"$name\" references).\n"
             "3. Add key dimensions on NOTES (add_dimension). 4. check_cnc and fix issues. "
             "5. take_screenshot to verify, then save_document.")
 
 
 @tool
-def move_to_entity(ids: list[str], entity: str = "") -> str:
+def move_to_entity(ids: Ids, entity: str = "") -> str:
     """Add shapes or entities to an entity, or take them out of one. Entities left empty are removed.
 
     Args:
         ids: Element ids (el-…) and/or entity ids (g-…) to move.
         entity: Target entity id (g-…). Empty = take them out to the top level.
     """
-    n = store.apply([{"op": "set_group", "items": ids, "group": entity or None}])[0]
+    n = store.apply([{"op": "set_group", "items": ids_arg(ids), "group": entity or None}])[0]
     return json.dumps({"moved": n, "entity": entity or None})
 
 
@@ -839,9 +877,10 @@ def design_furniture(description: str, machine: str = "") -> str:
             "1. Call get_guide and follow it (workflow, layers, 3D placement recipes, CNC rules).\n"
             "2. Ask me anything essential that's missing (size, material/thickness, who uses it).\n"
             "3. new_document, set_project_name, set_material, add the layers you need (HARDWARE, pocket layers).\n"
-            "4. Work out the dimensions, then build one part per apply_ops batch (shapes + group + update_group with qty and assembly).\n"
-            "5. Lay the parts out on sheets (or my machine's beds) with outlines on NOTES; list parts that don't fit.\n"
-            "6. check_cnc, then take_screenshot 2d, 3d and 3d-exploded; fix what looks wrong.\n"
+            "4. Work out the dimensions, then build one part per apply_ops batch (shapes + group + update_group with qty and "
+            "assembly {rotation, position}; the matrix is automatic). More than ~5 parts: a kerf_script Python script.\n"
+            "5. arrange_parts onto the sheets (or my machine's beds); tell me which parts don't fit.\n"
+            "6. check_cnc and describe_assembly, then take_screenshot 2d, 3d and 3d-exploded; fix what looks wrong.\n"
             "7. Add notes (hardware list, cut order, assembly, safety), save_document and give me the share link.")
 
 
@@ -958,7 +997,8 @@ async def take_screenshot(view: str = "2d"):
             return Image(data=png, format="png")
     with store.lock:
         store.screenshot_requested = False
-    return json.dumps({"error": "No editor answered. Open http://localhost:8765/ in a browser."})
+    return json.dumps({"error": f"No editor answered. Ask the user to open {EDITOR_URL}/ in a browser. "
+                                "Meanwhile check_cnc and describe_assembly verify the layout and 3D placement in numbers."})
 
 
 @tool
@@ -1140,6 +1180,12 @@ async def get_check(request):
     return web.json_response(cnc_issues(store.get_tab(request.query.get("tab") or None).doc))
 
 
+@api
+async def get_assembly(request):
+    """describe_assembly for a tab (?tab=, default the active one)."""
+    return web.json_response(layout.assembly_report(store.get_tab(request.query.get("tab") or None).doc))
+
+
 async def get_guide_http(request):
     """The design guide as Markdown (the same text as the get_guide MCP tool)."""
     return web.Response(text=GUIDE_TEXT, content_type="text/markdown", charset="utf-8")
@@ -1255,6 +1301,7 @@ def run_http_server():
     r.add_get("/api/guide", get_guide_http)
     r.add_get("/api/script", get_script)
     r.add_get("/api/check", get_check)
+    r.add_get("/api/assembly", get_assembly)
     r.add_static("/", WEB_DIR)
 
     loop = asyncio.new_event_loop()

@@ -18,6 +18,7 @@ import time
 from pathlib import Path
 
 from document import Document, DocError, to_native, from_native, clean_material, clean_title
+import layout
 
 NATIVE_EXT = ".kerf"
 LEGACY_EXT = ".svgcnc"      # early name of the project format; still opens
@@ -255,9 +256,14 @@ class Store:
             t = self.get_tab(tab_id)
             before = t.doc                  # never mutated: every change happens on a copy
             work = t.doc.clone()
-            results = []
-            for op in ops:                  # "$n" in an op refers to the result of op n of this batch
-                results.append(apply_op(work, resolve_refs(op, results)))
+            results, names = [], {}
+            for n, op in enumerate(ops):    # "$n" = result of op n of this batch; "$name" = of the op with "as": "name"
+                try:
+                    results.append(apply_op(work, resolve_refs(op, results, names)))
+                except DocError as e:
+                    raise DocError(f"op {n} ({op.get('op')}): {e}" if len(ops) > 1 else str(e)) from None
+                if op.get("as") is not None:
+                    names[str(op["as"])] = results[-1]
             if any(op.get("op") not in NO_HISTORY_OPS for op in ops):
                 label = label or describe(ops)
                 key = coalesce_key(ops)
@@ -599,7 +605,20 @@ def apply_op(doc: Document, op: dict):
     if kind == "ungroup":
         return doc.ungroup(op["id"])
     if kind == "update_group":
-        return doc.update_group(op["id"], op.get("name"), op.get("qty"), op.get("assembly", ...)).id
+        asm = op.get("assembly", ...)
+        if isinstance(asm, dict) and asm.get("matrix") in (None, "auto"):
+            # No matrix: keep the part's current one, else its drawing's bottom-left corner, y up
+            old = doc.group_by_id(op["id"]).assembly or {}
+            keep = old.get("matrix") if asm.get("matrix") is None else None
+            asm = {**asm, "matrix": keep or layout.default_matrix(doc, op["id"])}
+        return doc.update_group(op["id"], op.get("name"), op.get("qty"), asm).id
+    # moving parts on the drawing (their 3D placement follows)
+    if kind == "move":
+        return layout.reposition(doc, op["items"], op.get("dx", 0), op.get("dy", 0))
+    if kind == "transform":
+        return layout.reposition(doc, op["items"], transform=str(op["transform"]))
+    if kind == "arrange":
+        return layout.arrange(doc, op)
     if kind == "set_title":
         doc.title = clean_title(op.get("title"))
         return None
@@ -615,13 +634,17 @@ def apply_op(doc: Document, op: dict):
     raise DocError(f"Unknown op '{kind}'")
 
 
-def resolve_refs(op: dict, results: list):
+def resolve_refs(op: dict, results: list, names: dict | None = None):
     def res(v):
         if isinstance(v, str) and re.fullmatch(r"\$\d+", v):
             i = int(v[1:])
             if i >= len(results):
                 raise DocError(f"{v} refers to an operation that hasn't run yet")
             return results[i]
+        if isinstance(v, str) and len(v) > 1 and v[0] == "$":       # ids never start with "$"
+            if v[1:] not in (names or {}):
+                raise DocError(f'{v}: no earlier op in this batch has "as": "{v[1:]}"')
+            return names[v[1:]]
         if isinstance(v, list):
             return [res(x) for x in v]
         return v
@@ -635,7 +658,8 @@ def describe(ops: list[dict]) -> str:
              "set_background": "Background", "set_background_opacity": "Background opacity",
              "clear": "Clear", "replace_svg": "Edit code", "import_svg": "Import SVG",
              "group": "Group", "ungroup": "Ungroup", "set_group": "Move to entity", "update_group": "Edit entity", "set_params": "Parameters",
-             "set_material": "Material", "set_title": "Rename project"}
+             "set_material": "Material", "set_title": "Rename project", "move": "Move",
+             "transform": "Transform", "arrange": "Arrange on sheets"}
     kinds = {op.get("op") for op in ops}
     if len(kinds) == 1:
         k = kinds.pop()
@@ -647,6 +671,8 @@ def describe(ops: list[dict]) -> str:
 
 def coalesce_key(ops: list[dict]) -> str | None:
     """Rapid repeated edits of the same thing (typing in a field) merge into one undo step."""
+    if len(ops) == 1 and ops[0].get("op") == "move" and ops[0].get("coalesce"):
+        return f'move:{",".join(sorted(map(str, ops[0].get("items") or [])))}:{ops[0]["coalesce"]}'
     if len(ops) == 1 and ops[0].get("op") in ("update_element", "update_layer", "update_group",
                                              "set_background_opacity", "set_material"):
         op = ops[0]

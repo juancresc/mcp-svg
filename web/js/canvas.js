@@ -3,7 +3,7 @@
 
 import { app, emit, on, savePref, setSelection, elementById, itemAt, elementsOf, selectItems, selectedItems,
          setContext, descendants, groupById, ancestors } from './state.js';
-import { NS, createNode, moveAttrs, bboxOf, unionBox, boxInside, boxTouches } from './geometry.js';
+import { NS, createNode, bboxOf, unionBox, boxInside, boxTouches } from './geometry.js';
 import { api } from './api.js';
 import { modal, toast } from './ui.js';
 
@@ -600,9 +600,9 @@ async function finishGesture(e) {
   } else if (g.kind === 'move') {
     const { dx, dy, ids } = g;
     if (!dx && !dy) { resetMovePreview(g); if (pendingRender) render(); return; }
-    const ops = ids.map(id => ({ op: 'update_element', id, attrs: moveAttrs(elementById(id), dx, dy) }));
     pendingRender = true;
-    await api.ops(ops, ids.length > 1 ? `Move ${ids.length} elements` : 'Move');
+    // One `move` op: the server moves the shapes and keeps moved entities' 3D placement
+    await api.ops([{ op: 'move', items: ids, dx, dy }], ids.length > 1 ? `Move ${ids.length} elements` : 'Move');
     render();
   } else if (g.kind === 'marquee') {
     g.node.remove();

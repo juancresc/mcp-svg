@@ -541,7 +541,7 @@ export function selectAll() {
 export async function nudge(dx, dy) {
   const ids = editableSelection();
   if (!ids.length) return;
-  await api.ops(ids.map(id => ({ op: 'update_element', id, attrs: moveAttrs(elementById(id), dx, dy), coalesce: 'nudge' })), 'Nudge');
+  await api.ops([{ op: 'move', items: ids, dx, dy, coalesce: 'nudge' }], 'Nudge');
 }
 
 export async function reorder(where) {

@@ -38,6 +38,8 @@ def wired(srv, monkeypatch):
             return {"result": st.save(body["file"], body.get("tab"))}
         if path == "check":
             return srv.cnc_issues(st.get_tab(dict(q.split("=") for q in query.split("&"))["tab"]).doc)
+        if path == "assembly":
+            return srv.layout.assembly_report(st.get_tab(dict(q.split("=") for q in query.split("&"))["tab"]).doc)
         raise AssertionError(path)
     monkeypatch.setattr(k, "call", call)
     return srv
@@ -101,24 +103,53 @@ def test_layer_exist_ok_updates_instead_of_failing(srv):
         srv.store.apply([{"op": "add_layer", "name": "POCKET", "color": "#000000"}])
 
 
-def test_guide_example_runs_and_passes_check(wired, tmp_path):
+def test_guide_example_runs_and_passes_check(wired, tmp_path, monkeypatch, capsys):
     guide = wired.get_guide("scripts")
     assert guide.startswith("## Parametric scripts")
     code = re.search(r"```python\n(.*?)```", guide, re.S).group(1)
-    user_tab = wired.store.state()["active"]
-    out = {}
-    code = code.replace("print(k.check(tab))", "out['check'] = k.check(tab)")
-    exec(code, {"kerf_script": k, "out": out, "__name__": "example"})
     st = wired.store
+    user_tab = st.state()["active"]
+    monkeypatch.setattr(sys, "argv", ["shelf.py", "--save", "shelf/shelf"])
+    env = {"kerf_script": k, "__name__": "example"}
+    exec(code, env)
+    out = capsys.readouterr().out
+    assert "check_cnc: ok" in out, out
+    assert "sheets: 1" in out
     assert st.state()["active"] == user_tab or len(st.tabs) == 1     # user's tab stays active
-    assert out["check"]["ok"], out["check"]
     assert (tmp_path / "shelf" / "shelf.kerf").exists()
     doc = json.loads((tmp_path / "shelf" / "shelf.kerf").read_text())["document"]
-    assert [g["name"] for g in doc["groups"]] == ["Side L"]
-    # re-running the same script into the same tab is safe (clear + exist_ok layers)
-    tab = st.state()["tabs"][-1]["id"]
-    exec(code.replace("tab = k.new_tab(1200, 900)", f"tab = {tab!r}"), {"kerf_script": k, "out": out, "__name__": "example"})
-    assert len(st.get_tab(tab).doc.groups) == 1
+    assert sorted(g["name"] for g in doc["groups"]) == ["Notes", "Shelf", "Side L", "Side R"]
+    tab = env["tab"]
+    # arranging moved the parts on the drawing, but not in 3D
+    rep = {p["name"]: p["box"] for p in wired.layout.assembly_report(st.get_tab(tab).doc)["parts"]}
+    assert rep["Side L"] == [-209, 0, -150, -191, 700, 150]
+    assert rep["Shelf"] == [-209, 300.2, -110, 209, 318.2, 110]
+    # re-running the same script into the same tab rebuilds it in place, as one undo step
+    undo_before = len(st.get_tab(tab).undo_stack)
+    monkeypatch.setattr(sys, "argv", ["shelf.py", tab])
+    exec(code, {"kerf_script": k, "__name__": "example"})
+    assert len(st.get_tab(tab).doc.groups) == 4
+    assert len(st.get_tab(tab).undo_stack) == undo_before + 1
+
+
+def test_drawing_expect_stops_before_sending(wired):
+    d = k.Drawing("Oops")
+    d.part("Board", k.rect(0, 0, 100, 50), rotation=(0, 0, 0), position=(0, 0, 0))
+    d.expect("Board", (0, 0, 0, 100, 50, 18))
+    assert not d.problems
+    d.expect("Board", (0, 10, 0, 100, 60, 18))
+    with pytest.raises(SystemExit, match="Board lands at"):
+        d.run([])
+
+
+def test_drawing_without_arrange_sizes_the_document(wired):
+    d = k.Drawing("Row")
+    d.part("A", k.rect(0, 0, 500, 300), label=False)
+    d.part("B", k.circle(0, 0, 100), holes=[k.circle(0, 0, 20)])
+    tab = d.send()
+    doc = wired.store.get_tab(tab).doc
+    assert doc.width >= 20 + 500 + 30 + 200 and doc.height >= 320
+    assert wired.cnc_issues(doc)["ok"]
 
 
 def test_script_and_check_endpoints(srv):
