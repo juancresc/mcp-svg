@@ -26,6 +26,7 @@ const MENUS = [
     ['Save', actions.save, MOD + 'S'],
     ['Save As…', () => actions.saveAs(), SHIFT + MOD + 'S'],
     ['Download project (.kerf)', actions.saveToComputer],
+    ['Copy link to this project', actions.copyShareLink, null, () => !!app.server?.file],
     ['Revert to saved', actions.revert, null, () => !!app.server?.file],
     '-',
     ['# Import'],

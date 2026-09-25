@@ -1,0 +1,20 @@
+# Production: plain IP on the crm_3k server (t4g.small, arm64), no domain.
+# Used by `./prod.sh` → `docker compose --env-file .env -f docker-compose-prod.yml`.
+# Traefik (crm_3k) owns 80/443, so Kerf publishes its own ports directly.
+# Open 8765 and 8766 in the instance's security group.
+services:
+  kerf:
+    container_name: kerf_prod
+    build: ./mcp-server
+    restart: unless-stopped
+    ports:
+      - "8765:8765"   # editor + HTTP API
+      - "8766:8766"   # MCP (SSE)
+    environment:
+      - HTTP_PORT=8765
+      - MCP_PORT=8766
+      - KERF_PUBLIC_URL=${KERF_PUBLIC_URL:?set KERF_PUBLIC_URL in .env (./prod.sh init-env)}
+      - KERF_TOKEN=${KERF_TOKEN:?set KERF_TOKEN in .env (./prod.sh init-env)}
+    volumes:
+      - ./web:/app/web:ro
+      - ./data:/app/data

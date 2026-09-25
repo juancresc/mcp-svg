@@ -51,6 +51,31 @@ export async function switchTab(tabId, view) {
   emit('view-mode');
 }
 
+/** Open a data-folder file from a share link; a missing file just shows a message. */
+export async function openShared(file, view) {
+  const s = await api.open(file);
+  if (!s) return;                           // api already showed the error (e.g. not found)
+  if (view === '3d' || view === '2d') {
+    setTabView(s.active, view);
+    app.view = view;
+    emit('view-mode');
+  }
+}
+
+/** Copy a link that opens this project (and the current 2D/3D view) for whoever has the editor. */
+export async function copyShareLink() {
+  const file = app.server.file;
+  if (!file) return toast('Save it to the data folder first (File → Save As) — links open saved projects', 'error');
+  const url = `${location.origin}/?open=${file.split('/').map(encodeURIComponent).join('/')}${app.view === '3d' ? '&view=3d' : ''}`;
+  try {
+    await navigator.clipboard.writeText(url);
+    toast(`Link copied: ${url}`, 'ok');
+  } catch (_) {
+    await modal({ title: 'Link to this project', html: `<input class="field" readonly value="${esc(url)}" style="width:100%">`,
+                  setup: (form) => { const i = form.querySelector('input'); i.focus(); i.select(); } });
+  }
+}
+
 export function open3d(tabId = app.server.active) {
   switchTab(tabId, '3d');
 }

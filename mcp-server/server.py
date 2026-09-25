@@ -1107,7 +1107,10 @@ async def local_only(request, handler):
         return web.json_response({"error": "Forbidden host"}, status=403)
     if TOKEN and request.path == "/" and request.query.get("token"):
         # Sign in: /?token=… sets an HttpOnly cookie, then drops the token from the address bar
-        resp = web.HTTPFound("/")
+        # keep the other parameters (e.g. ?open=… share links) through the sign-in
+        from urllib.parse import urlencode
+        rest = {k: v for k, v in request.query.items() if k != "token"}
+        resp = web.HTTPFound("/" + (f"?{urlencode(rest)}" if rest else ""))
         secure = request.secure or request.headers.get("X-Forwarded-Proto") == "https" or PUBLIC_URL.startswith("https")
         resp.set_cookie(TOKEN_COOKIE, request.query["token"], httponly=True, samesite="Strict", secure=secure,
                         max_age=60 * 60 * 24 * 90)
@@ -1116,7 +1119,10 @@ async def local_only(request, handler):
         if request.path.startswith("/api/"):
             return web.json_response({"error": "Missing or wrong token (Authorization: Bearer <KERF_TOKEN>)"}, status=401)
         if request.path in ("/", "/index.html"):
-            return web.Response(text=LOGIN_PAGE, content_type="text/html")
+            from html import escape
+            hidden = "".join(f'<input type="hidden" name="{escape(k)}" value="{escape(v)}">'
+                             for k, v in request.query.items() if k != "token")
+            return web.Response(text=LOGIN_PAGE.replace("<button>", hidden + "<button>"), content_type="text/html")
     if request.method == "POST":
         origin = request.headers.get("Origin")
         if origin and origin.split("://", 1)[-1].rsplit(":", 1)[0] not in ALLOWED_HOSTS:

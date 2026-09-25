@@ -283,3 +283,7 @@ document.getElementById('ruler-corner').addEventListener('click', canvas.toggleU
 app.zoom = +app.zoom || 1;
 canvas.setTool('select');
 startSync();
+
+// Share links: /?open=desk/desk.kerf[&view=3d] opens that file (or switches to its tab)
+const shareParams = new URLSearchParams(location.search);
+if (shareParams.get('open')) actions.openShared(shareParams.get('open'), shareParams.get('view'));
