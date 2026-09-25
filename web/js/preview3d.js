@@ -66,7 +66,18 @@ function setup() {
   controls.enableDamping = true;
   controls.screenSpacePanning = true;       // pan moves the view up/down/sideways, like a CAD viewer
   controls.zoomToCursor = true;             // scroll zooms toward the pointer
-  controls.listenToKeyEvents(window);       // arrow keys pan
+  // Arrow keys pan — but OrbitControls swallows them wherever they're pressed, so it only gets
+  // copies of the keys pressed while the 3D view is showing and nobody is typing or in a dialog
+  const keyProxy = new EventTarget();
+  controls.listenToKeyEvents(keyProxy);
+  window.addEventListener('keydown', (e) => {
+    if (document.getElementById('view3d').hidden || document.querySelector('dialog[open]')) return;
+    if (e.target.closest?.('input, textarea, select, [contenteditable]')) return;
+    const copy = new KeyboardEvent('keydown', { key: e.key, code: e.code, shiftKey: e.shiftKey,
+                                                ctrlKey: e.ctrlKey, metaKey: e.metaKey, cancelable: true });
+    keyProxy.dispatchEvent(copy);
+    if (copy.defaultPrevented) e.preventDefault();
+  });
   controls.keyPanSpeed = 25;
   setNavMode(navMode);
   scene.add(new THREE.HemisphereLight('#ffffff', '#b9b2a4', 1.1));
