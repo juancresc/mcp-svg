@@ -145,3 +145,15 @@ export function pickFile(accept) {
     input.click();
   });
 }
+
+/** Clipboard API, or the old select + execCommand way (works on plain http too). */
+export async function copyText(text) {
+  try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall through */ }
+  const ta = Object.assign(document.createElement('textarea'), { value: text });
+  ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
+  (document.querySelector('dialog[open]') || document.body).append(ta);
+  ta.select();
+  const ok = document.execCommand('copy');
+  ta.remove();
+  return ok;
+}

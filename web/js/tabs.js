@@ -19,6 +19,7 @@ export function renderTabs() {
           <button class="${view === '2d' ? 'on' : ''}" data-view="2d" title="Drawing (2D)">2D</button><button
             class="${view === '3d' ? 'on' : ''}" data-view="3d" title="3D preview (3)">3D</button></span>`
         : (view === '3d' ? '<span class="tab-kind">3D</span>' : '')}
+      ${active ? `<button class="tab-ref" data-ref="${esc(t.id)}" title="Copy a link to this tab (plus the selection) to paste into Claude">⧉</button>` : ''}
       <button class="tab-close" data-close="${esc(t.id)}" title="Close">×</button></div>`;
   });
   html.push('<button class="tab-new" data-new title="New document">+</button>');
@@ -27,6 +28,8 @@ export function renderTabs() {
 
 bar.addEventListener('click', (e) => {
   if (e.target.closest('[data-new]')) return actions.newDocument();
+  const ref = e.target.closest('[data-ref]');
+  if (ref) { e.stopPropagation(); return actions.copyTabRef(ref.dataset.ref); }
   const close = e.target.closest('[data-close]');
   if (close) { e.stopPropagation(); return actions.closeTab(close.dataset.close); }
   const tab = e.target.closest('[data-tab]');

@@ -31,6 +31,8 @@ Kerf is a CAD-style editor for CNC-cut parts: flat parts cut from sheet material
    - tell the user the share link, `<editor>/?open=<file>` (add `&view=3d` for the 3D view);
    - add a NOTES text with the cut order, the hardware list and assembly or safety notes.
 
+When the user pastes a Kerf link (`…/?open=<file>`), call `open_document` with it: that switches to the tab (or opens it).
+
 Never discard the user's unsaved work or close their tabs without asking. Tools act on the active tab: `list_tabs` / `switch_tab`.
 
 ## Layers

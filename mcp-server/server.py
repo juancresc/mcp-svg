@@ -149,16 +149,27 @@ def new_document(width: float = 800, height: float = 600) -> str:
     return json.dumps(summary())
 
 
+def file_from_link(ref: str) -> str:
+    """'http://host/?open=desk/desk.kerf&view=3d' (or just '?open=…') → 'desk/desk.kerf'; paths pass through."""
+    if "open=" in ref and ("://" in ref or ref.lstrip().startswith("?")):
+        from urllib.parse import parse_qs, urlsplit
+        found = parse_qs(urlsplit(ref.strip()).query).get("open")
+        if found:
+            return found[0]
+    return ref
+
+
 @tool
 def open_document(file: str) -> str:
     """Open a project from the data folder in a new tab (or switch to its tab if already open).
     Projects are .kerf files ("desk/desk" finds desk/desk.kerf). An .svg or .dxf opens as a
-    new unsaved tab (saving it creates a .kerf).
+    new unsaved tab (saving it creates a .kerf). The user's tab links work too
+    (http://…/?open=desk/desk.kerf&view=3d).
 
     Args:
-        file: Path relative to the data folder; the extension is optional for projects.
+        file: Path relative to the data folder (extension optional for projects), or a Kerf link.
     """
-    store.open(file)
+    store.open(file_from_link(file))
     return json.dumps(summary())
 
 

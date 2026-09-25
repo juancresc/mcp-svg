@@ -3,7 +3,7 @@
 import { app, emit, setSelection, selectedElements, elementById, selectedItems, selectItems, elementsOf,
          groupById, setContext, setTabView } from './state.js';
 import { api } from './api.js';
-import { modal, confirmDialog, toast, esc, download, pickFile, fmt } from './ui.js';
+import { modal, confirmDialog, toast, esc, download, pickFile, fmt, copyText } from './ui.js';
 import { moveAttrs, docToPng } from './geometry.js';
 import * as canvas from './canvas.js';
 import { PRESETS as MATERIAL_PRESETS } from './materials.js';
@@ -60,6 +60,26 @@ export async function openShared(file, view) {
     app.view = view;
     emit('view-mode');
   }
+}
+
+const shareUrl = (file, view) => `${location.origin}/?open=${file.split('/').map(encodeURIComponent).join('/')}${view === '3d' ? '&view=3d' : ''}`;
+
+/** Copy a reference to a tab (and the selection) to paste into Claude. Saved tabs: their link —
+ *  open_document accepts it and switches to the tab (paths are stable, tab ids aren't).
+ *  Unsaved tabs: the tab id. No access token: Claude's MCP connection has its own. */
+export async function copyTabRef(tabId = app.server.active) {
+  const t = app.server.tabs.find(x => x.id === tabId);
+  if (!t) return;
+  let text = t.file
+    ? `Kerf "${t.name}": ${shareUrl(t.file, app.tabViews[t.id])} (open_document with this link or "${t.file}")`
+    : `Kerf tab ${t.id} "${t.name}" (not saved yet): switch_tab("${t.id}")`;
+  if (tabId === app.server.active && app.selection.size) {
+    const items = selectedItems().map(it => it.startsWith('g-') ? `entity "${groupById(it)?.name}" (${it})` : it);
+    if (items.length) text += `. Selected: ${items.join(', ')}`;
+  }
+  if (await copyText(text)) toast('Copied — paste it into Claude', 'ok');
+  else await modal({ title: 'Tab reference', html: `<input class="field" readonly value="${esc(text)}" style="width:100%">`,
+                     setup: (form) => { const i = form.querySelector('input'); i.focus(); i.select(); } });
 }
 
 /** Copy a link that opens this project (and the current 2D/3D view) for whoever has the editor. */

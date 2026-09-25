@@ -380,6 +380,8 @@ dialog:has(.connect) { max-width: min(760px, calc(100vw - 32px)); width: 760px; 
   cursor: pointer; opacity: .6; display: flex; align-items: center; justify-content: center; font-size: 14px;
 }
 .tab .tab-close:hover { background: rgba(0,0,0,.2); opacity: 1; }
+.tab .tab-ref { border: 0; background: none; color: inherit; opacity: .5; cursor: pointer; font-size: 12px; padding: 0 2px; }
+.tab .tab-ref:hover { opacity: 1; }
 .tab-new { height: 24px; width: 26px; margin-bottom: 2px; border: 0; border-radius: 5px; background: none; color: #ccc; cursor: pointer; font-size: 16px; }
 .tab-new:hover { background: #555; }
 
@@ -411,6 +413,18 @@ dialog:has(.connect) { max-width: min(760px, calc(100vw - 32px)); width: 760px; 
 .entity .ent-name input { width: 100%; font: inherit; padding: 1px 3px; border: 1px solid var(--accent); border-radius: 3px; }
 .entity.drop-into, #entities.drop-into { outline: 2px dashed var(--accent); outline-offset: -2px; background: var(--accent-soft); }
 .ent-kv { margin-top: 10px; }
+.ent-contents { max-height: 240px; overflow: auto; border: 1px solid var(--border); border-radius: 6px; }
+.ent-item { display: flex; align-items: center; gap: 8px; padding: 3px 4px 3px 8px; font-size: 12px; cursor: pointer; border-bottom: 1px solid #f0f0f0; }
+.ent-item:last-child { border-bottom: 0; }
+.ent-item:hover { background: var(--accent-soft); }
+.ent-sw { width: 10px; height: 10px; border-radius: 2px; flex-shrink: 0; }
+.ent-sw-group { background: none; width: auto; height: auto; color: var(--muted); font-size: 11px; }
+.ent-what { min-width: 42px; }
+.ent-dim { flex: 1; color: var(--text); font-variant-numeric: tabular-nums; }
+.ent-layer { color: var(--muted); font-size: 10.5px; }
+.ent-item .take-out { width: 20px; height: 20px; font-size: 14px; opacity: .5; }
+.ent-item:hover .take-out { opacity: 1; }
+.ent-item .take-out:hover { color: var(--danger); }
 .ent-row { display: flex; align-items: baseline; gap: 10px; flex-wrap: wrap; }
 .entity .ent-meta { font-size: 10px; color: var(--muted); }
 .entity .ent-3d { font-size: 9px; border: 1px solid #c9d7f0; color: #4a6aa8; border-radius: 3px; padding: 0 3px; }
@@ -521,3 +535,4 @@ dialog.wide { min-width: 560px; }
 .view3d-panel .seg .btn:first-child { border-radius: 5px 0 0 5px; }
 .view3d-panel .seg .btn:last-child { border-radius: 0 5px 5px 0; border-left: 0; }
 .view3d-panel .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }
+#content .hover-hl { stroke: var(--accent) !important; stroke-width: 3px !important; vector-effect: non-scaling-stroke; }

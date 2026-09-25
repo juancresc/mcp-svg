@@ -953,3 +953,9 @@ export async function commitDraw() {
   if (state?.results) setSelection([state.results[0]]);
   if (pendingRender) render();
 }
+
+/** Hover highlight (e.g. from the Inspector's entity contents): outline these element ids. */
+export function highlight(ids) {
+  document.querySelectorAll('#content .hover-hl').forEach(n => n.classList.remove('hover-hl'));
+  for (const id of ids) document.querySelector(`#content [data-id="${CSS.escape(id)}"]`)?.classList.add('hover-hl');
+}

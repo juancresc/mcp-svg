@@ -557,6 +557,9 @@ function renderGroupInspector(g, sel) {
       <label>Contains</label><span class="val">${sel.length} shapes · ${layers.map(esc).join(', ')}</span>
       <label>Bounds</label><span class="val" data-bounds="auto">${box && box.width ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—'}</span>
     </div>
+    <h3>Contents (${contents(g).length})</h3>
+    <div class="ent-contents">${contents(g).map(contentRow).join('') || '<p class="hint">Empty</p>'}</div>
+    <p class="hint" style="margin-top:6px">Click a row to select it on the canvas · × takes it out of “${esc(g.name)}”.</p>
     <h3>3D placement</h3>
     ${a ? `<div class="kv">
       <label>Thickness</label><span class="unit" data-unit="mm"><input type="number" step="any" data-a="thickness" value="${num(a.thickness, 18)}"></span>
@@ -606,4 +609,49 @@ function renderGroupInspector(g, sel) {
   inspector.querySelector('[data-ungroup]').addEventListener('click', actions.ungroup);
   inspector.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => actions[b.dataset.action]()));
   inspector.querySelector('[data-zoom]').addEventListener('click', () => canvas.zoomToSelection());
+  const box2 = inspector.querySelector('.ent-contents');
+  box2?.addEventListener('click', async (e) => {
+    const row = e.target.closest('[data-item]');
+    if (!row) return;
+    const item = row.dataset.item;
+    if (e.target.closest('[data-take-out]')) {
+      await api.ops([{ op: 'set_group', items: [item], group: g.parent || null }], 'Remove from entity');
+      if (groupById(g.id)) selectItems([g.id]);            // stay on the entity (unless it's now empty)
+      return;
+    }
+    setContext(g.id);                                        // go inside and select just that item
+    canvas.render();
+    selectItems([item]);
+  });
+  box2?.addEventListener('mouseover', (e) => {
+    const item = e.target.closest('[data-item]')?.dataset.item;
+    canvas.highlight(item ? elementsOf(item) : []);
+  });
+  box2?.addEventListener("mouseleave", () => canvas.highlight([]));
+}
+
+/** Direct children of an entity: sub-entities first, then its own shapes. */
+function contents(g) {
+  const doc = app.doc;
+  return [...(doc.groups || []).filter(c => c.parent === g.id).map(c => c.id),
+          ...doc.elements.filter(e => e.group === g.id).map(e => e.id)];
+}
+
+function contentRow(item) {
+  const doc = app.doc;
+  const x = '<button class="icon-btn take-out" data-take-out title="Take it out of this entity">×</button>';
+  if (item.startsWith('g-')) {
+    const c = groupById(item);
+    return `<div class="ent-item" data-item="${esc(item)}"><span class="ent-sw ent-sw-group">▣</span>
+      <span class="ent-what"><b>${esc(c.name)}</b></span><span class="ent-dim">${descendants(item).length} shape${descendants(item).length === 1 ? '' : 's'}</span>${x}</div>`;
+  }
+  const e = doc.elements.find(el => el.id === item);
+  const layer = doc.layers.find(l => l.name === e.layer);
+  const a = e.attrs, n = (v) => fmt(+v || 0);
+  const dim = e.tag === 'circle' ? `Ø${n(2 * a.r)}` : e.tag === 'rect' ? `${n(a.width)} × ${n(a.height)}`
+    : e.tag === 'ellipse' ? `${n(2 * a.rx)} × ${n(2 * a.ry)}` : e.tag === 'line' ? `${n(Math.hypot(a.x2 - a.x1, a.y2 - a.y1))} long`
+    : e.tag === 'text' ? `“${esc((e.text || '').slice(0, 18))}”` : '';
+  return `<div class="ent-item" data-item="${esc(item)}"><span class="ent-sw" style="background:${esc(layer?.color || '#999')}"></span>
+    <span class="ent-what">${esc(e.tag)}</span><span class="ent-dim">${dim}</span>
+    <span class="ent-layer">${esc(e.layer)}</span>${x}</div>`;
 }

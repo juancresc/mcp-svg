@@ -1,7 +1,7 @@
 // "Connect Claude": copy-paste setups for Claude Code / Claude Desktop (MCP) or a plain curl
 // prompt, built from the addresses the server reports (works locally and when deployed).
 
-import { modal, toast, esc } from './ui.js';
+import { modal, toast, esc, copyText } from './ui.js';
 
 const q = (s) => `'${s.replace(/'/g, `'\\''`)}'`;   // shell single-quote
 
@@ -56,18 +56,6 @@ Use fill="none"; never set stroke colours (the layer decides). Group each part's
 Don't discard my unsaved work or close my tabs without asking.`,
     },
   ];
-}
-
-/** Clipboard API, or the old select + execCommand way (works on plain http too). */
-async function copyText(text) {
-  try { await navigator.clipboard.writeText(text); return true; } catch (_) { /* fall through */ }
-  const ta = Object.assign(document.createElement('textarea'), { value: text });
-  ta.style.cssText = 'position:fixed;opacity:0;top:0;left:0';
-  (document.querySelector('dialog[open]') || document.body).append(ta);
-  ta.select();
-  const ok = document.execCommand('copy');
-  ta.remove();
-  return ok;
 }
 
 // Minimal Markdown → HTML for the guide (headings, lists, tables, code, bold)

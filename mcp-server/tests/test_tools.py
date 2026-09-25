@@ -135,3 +135,12 @@ def test_get_guide_whole_and_sections(srv):
     assert placement.startswith("## 3D placement") and "## Layers" not in placement
     assert "sections" in srv.get_guide("nope")
     assert "get_guide" in srv.INSTRUCTIONS
+
+
+def test_open_document_accepts_links(srv, tmp_path):
+    assert srv.file_from_link("http://localhost:8765/?open=desk/My%20desk.kerf&view=3d") == "desk/My desk.kerf"
+    assert srv.file_from_link("?open=a.kerf") == "a.kerf"
+    assert srv.file_from_link("desk/desk") == "desk/desk"
+    srv.store.save("shared/part")
+    j(srv.open_document("http://localhost:8765/?open=shared/part.kerf"))
+    assert srv.store.file == "shared/part.kerf"
