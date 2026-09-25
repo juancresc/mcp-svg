@@ -25,7 +25,9 @@ function accept(state) {
   if (!sameInstance || (state.doc && state.version > app.server.version)) {
     instance = state.instance;
     attachBackground(state.doc);
+    const tabChanged = app.server?.active !== state.active;
     app.server = state;
+    if (tabChanged) emit('tab-changed');
     emit('doc');
   } else if (!state.doc && state.version === app.server.version) {
     Object.assign(app.server, { ...state, doc: app.server.doc });   // metadata only
@@ -79,12 +81,21 @@ export const api = {
   ops: (ops, label) => serial(() => call('POST', '/api/ops', { ops, label })),
   undo: () => serial(() => call('POST', '/api/undo', {})),
   redo: () => serial(() => call('POST', '/api/redo', {})),
-  newDoc: (width, height, discard) => serial(() => call('POST', '/api/file/new', { width, height, discard })),
-  open: (file, discard) => serial(() => call('POST', '/api/file/open', { file, discard })),
+  newDoc: (width, height) => serial(() => call('POST', '/api/file/new', { width, height })),
+  open: (file) => serial(() => call('POST', '/api/file/open', { file })),
+  close: (tab, discard) => serial(() => call('POST', '/api/file/close', { tab, discard })),
+  activate: (tab) => serial(() => call('POST', '/api/file/activate', { tab })),
+  revert: () => serial(() => call('POST', '/api/file/revert', {})),
   save: (file) => serial(() => call('POST', '/api/file/save', { file })),
+  savedLocal: (name) => serial(() => call('POST', '/api/file/saved-local', { name })),
+  mkdir: (folder) => serial(() => call('POST', '/api/file/mkdir', { folder })),
   deleteFile: (file) => serial(() => call('POST', '/api/file/delete', { file })),
   importSvg: (svg, opts = {}) => serial(() => call('POST', '/api/file/import', { svg, ...opts })),
+  importProject: (text, opts = {}) => serial(() => call('POST', '/api/file/import', { project: text, ...opts })),
+  importDxf: (dxfBase64, opts = {}) => serial(() => call('POST', '/api/file/import', { dxf: dxfBase64, ...opts })),
   files: () => request('GET', '/api/files'),
+  browse: (folder = '') => request('GET', '/api/browse?folder=' + encodeURIComponent(folder)),
+  exportText: (kind) => fetch('/api/export/' + kind).then(r => r.ok ? r.text() : Promise.reject(new Error(r.statusText))),
   screenshot: (image) => request('POST', '/api/screenshot', { image }),
 };
 

@@ -4,83 +4,108 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-A browser-based SVG editor for **CNC-ready cut drawings**, plus an MCP server so Claude can draw, edit and preview the same document. 1 SVG unit = 1 mm everywhere.
+A browser-based CAD-style editor for **CNC-ready cut drawings**, plus an MCP server so Claude can draw, edit and preview the same documents live with the user. 1 unit = 1 mm everywhere.
 
-It is being used to design a plywood sit/stand desk inspired by the Jaswig StandUp. The desk project lives in `data/desk/` (generator `generate.py`, spec `DESIGN.md`, reference photos, and a reference `For CNC.dxf` that is **only for a final comparison, never as a drawing source**).
+Projects are saved as **`.svgcnc`** (JSON: layers, elements, entities, 3D placements, parameters, material, reference image). **SVG, DXF, per-part files, PNG, GLB and STL are exports.** SVG and DXF files can also be opened or imported.
+
+It is being used to design a plywood sit/stand desk. That project lives in `data/desk/`: `generate.py` (the parametric source, it also writes `desk.svgcnc`), `DESIGN.md` (the spec) and reference photos. `For CNC.dxf` there is **only for a final comparison, never a design source**.
 
 ## Running & testing
 
 ```bash
 docker compose up -d --build        # editor at http://localhost:8765, MCP (SSE) on :8766
-docker compose run --rm --no-deps -T --entrypoint python svg-mcp -m pytest -q tests   # server tests
+docker compose run --rm --no-deps -T --entrypoint python svg-mcp -m pytest -q tests   # server + MCP tool tests
+python3 data/desk/generate.py --push   # regenerate the desk and (re)open it in the editor
 ```
 
-- `web/` and `data/` are bind-mounted: edit the UI and reload the page, no rebuild. Python changes need `--build`.
-- Rebuilding the container drops Claude Code's MCP connection; reconnect with `/mcp`.
-- No build tools or JS dependencies: the UI is plain ES modules served as-is.
+- `web/` and `data/` are bind-mounted: edit the UI and reload the page. Python changes need `--build`.
+- Rebuilding restarts the server. Claude Code's MCP connection must then be reconnected (`/mcp`). Open tabs and unsaved work survive in `data/.session.json`.
+- No build tools or JS dependencies. The UI is plain ES modules. The 3D preview loads three.js from cdn.jsdelivr.net.
 
 ## Architecture
 
-**The server is the single source of truth.** The browser never pushes whole documents; it sends operations and renders the state the server returns. This is deliberate: an earlier design where the browser and server both owned the document caused reloads to overwrite work.
+**The server is the single source of truth.** The browser sends operations and renders the state the server returns, kept live by long-polling. It never pushes whole documents, because that caused reloads to overwrite work in the past.
 
 ```
 mcp-server/
-  document.py   Document model (Layer, Element), validation, SVG read/write (file / cnc modes)
-  store.py      Store: open document, file name, dirty tracking, undo/redo, ops, files, session autosave
-  server.py     MCP tools + HTTP API (aiohttp) — thin wrappers over Store
-  tests/        pytest (store + document)
-web/
-  index.html, css/app.css
-  js/state.js     shared client state + event bus (on/emit)
-  js/api.js       HTTP client + long-poll sync (/api/state?since=<version>)
-  js/geometry.js  render attrs from layer styles, doc→SVG/PNG, move/bbox helpers
-  js/canvas.js    rendering, zoom/grid/rulers, tools (select/marquee/move, pan, draw)
-  js/panels.js    Layers panel + Inspector (selected shape / document)
-  js/actions.js   file/edit actions (new/open/save/import/export, duplicate, clear…)
-  js/menu.js      menu bar, toolbar, tool palette, keyboard shortcuts
-  js/main.js      wiring: server state → views, status bar, code panel, screenshots
-data/             documents (*.svg), exports/, .session.json (autosave; gitignored)
+  document.py  Document model: Layer (colour, line style, lock, export, description, depth),
+               Element (id, tag, layer, attrs, text, group), Group ("entity": name, parent, qty,
+               assembly), params, material. SVG read/write ("file" / "cnc"), .svgcnc (to/from_native).
+  store.py     Store: open documents as Tabs (file, dirty fingerprint, undo/redo, selection),
+               apply(ops) = one atomic undo step, files in data/, session autosave, screenshots.
+  export.py    SVG geometry → DXF (ezdxf; LWPOLYLINE with arc bulges, CIRCLE), DXF → SVG import,
+               per-entity part files + zip (nesting software), bounding boxes.
+  server.py    MCP tools + HTTP API (aiohttp) — thin wrappers over Store.
+  tests/       pytest: test_store.py (model/store/exports), test_tools.py (MCP tools)
+web/js/
+  state.js     client state, event bus, entity helpers (itemAt, descendants, selectItems, context)
+  api.js       HTTP client; mutations serialized; long-poll sync; background image cache
+  geometry.js  layer styling, doc→SVG/PNG, moveAttrs, bboxes
+  canvas.js    render, zoom/grid/rulers, tools: select (entities, drill-down, marquee), pan, draw
+               (drag or click–click + typed dimensions), text, measure (snaps) ; selection dims
+  panels.js    Layers (depth, export, …), Entities tree, Inspector (shape / entity + 3D placement /
+               document + Material & stock)
+  actions.js   file (tabs, Open/Save As browser, computer files), import/export, edit, entities
+  menu.js      menus (File/Edit/View/Layer/Export), toolbar, tool palette, shortcuts
+  tabs.js      document tabs + 3D preview tabs
+  preview3d.js three.js assembly: extrude entities (CUT_OUTSIDE outline, CUT_INSIDE holes,
+               pockets from layers with depth), place with assembly, sliders, GLB/STL export
+  materials.js material presets
+  main.js      wiring: state → views, status bar, code panel, side panel, selection sync, screenshots
+data/          projects (*.svgcnc), imports (.svg/.dxf), exports/, .session.json (gitignored)
 ```
 
-### Document model
-- `Document {width, height, layers[], elements[], background, next_id}`; elements are `{id: "el-N", tag, layer, attrs, text}`.
-- **Stroke colour and line style belong to the layer** (CNC colour convention). `stroke`, `stroke-dasharray`, `data-layer`, `style`, `id` are never stored in element attrs; they are applied when rendering/serializing. Fill, geometry, transform, font-size etc. are per element.
-- Layers: `name, color, line_style (solid|dashed|dotted|"a b"), visible, locked, export, description`. Defaults: CUT_OUTSIDE, CUT_INSIDE, ENGRAVE, NOTES (NOTES has `export=false`), each with a description of its CAM meaning.
-- File format (`to_svg("file")`): `width="…mm" height="…mm" viewBox`, Inkscape layers (`<g inkscape:groupmode="layer" inkscape:label=…>` with `data-color/-line-style/-export/-locked/-description`), explicit stroke attrs so other software renders it. `from_svg` also reads plain SVGs (`data-layer` attrs, no viewBox → bare numbers) and flattens group transforms onto elements.
-- CNC export (`to_svg("cnc")`): only layers that are `export` AND `visible`, no ids, no background.
+### Model rules
+- **Stroke colour and line style belong to the layer** (CNC colour convention). Element attrs never carry `stroke`, `stroke-dasharray`, `data-layer`, `data-group`, `style` or `id`. Attribute names are validated (no namespaces, no `on*`).
+- A layer with a **`depth`** is a partial-depth cut from the top face (a pocket). Without one it's a through-cut. `export` decides what goes into CNC exports (NOTES and HARDWARE don't).
+- **Entities** (groups) may span layers, so a part is its outline plus its holes. They nest through `parent`; the UI enters them with double-click, and Esc goes up. `qty` is used for part exports.
+- **`assembly`** (per entity) places the part in 3D:
+  - `matrix [a,b,c,d,e,f]` maps doc 2D → part-local 2D (y up).
+  - `thickness` is the extrusion along local +Z; the top face at z = thickness is the router face, where pockets are cut.
+  - `rotation` is in degrees (Euler XYZ); `position` is in world mm (X width, Y up, Z toward the viewer).
+  - optional `color`, and `move: {param, axis}` tied to a doc `params` slider.
+  - Opposite-hand parts with pockets must be drawn mirrored (see the desk's lower frame B).
+- `material` holds name, type, thickness, colour, sheet size, tool Ø and notes. It supplies the default thickness and colour in 3D.
 
-### Store / operations
-- All edits go through `Store.apply(ops)`: a batch is validated on a copy and committed atomically as **one undo step**. Ops: `add_element, update_element, remove_elements, reorder_element, add_layer, update_layer, set_layer_visibility, remove_layer, move_layer, set_size, set_background, set_background_opacity, clear, replace_svg, import_svg`.
-- `set_layer_visibility` is view state: synced, but not an undo step and not "unsaved".
-- Rapid single-field edits (typing, nudging) coalesce into one undo step (`coalesce_key`).
-- `dirty` = content fingerprint differs from the last save/open (undoing back to the saved state is clean).
-- Every change bumps `version`, notifies long-pollers and autosaves `data/.session.json`, so a server restart loses nothing (unsaved work included).
-- File names are resolved inside `data/` only (subfolders ok, no `..`, no dotfiles, no absolute paths). New/Open refuse to drop unsaved changes unless `discard=true`.
+### Store / sync
+- All edits go through `Store.apply(ops)` on the active tab (or a given tab). Ops:
+  - elements: `add_element, update_element, remove_elements, reorder_element`;
+  - layers: `add_layer, update_layer, set_layer_visibility, remove_layer, move_layer`;
+  - document: `set_size, set_background(_opacity), clear, replace_svg, import_svg, set_material, set_params`;
+  - entities: `group, ungroup, update_group`.
+- Undo/redo and dirty tracking are per tab. Visibility is view state: not undoable, doesn't make the file dirty.
+- `dirty` means the content fingerprint differs from the last save/open. Rapid single-field edits coalesce into one undo step.
+- Each state response carries the active tab's doc. The reference image is only an id; the image itself comes from `GET /api/background`.
+- `selection` per tab: the browser reports it (`POST /api/selection`). Claude sets it through MCP (`selection_seq`), and the browser then highlights and zooms to it.
+- Files are resolved inside `data/` only.
 
 ### HTTP API (port 8765)
-`GET /api/state[?since=V&instance=I]` (long-poll ≤25 s) · `POST /api/ops {ops,label}` · `POST /api/undo|redo` · `POST /api/file/new|open|save|delete|import` · `GET /api/files` · `GET /api/export/cnc|file` · `POST /api/screenshot`. Responses carry the full state (`version, file, name, dirty, can_undo, undo_label, …, doc`). `instance` changes on every server start.
-
-### Frontend notes
-- Rendering: `canvas.render()` rebuilds `#content` (one `<g>` per layer) from `app.doc`, plus `#hits`: invisible 12 px-wide clones (non-scaling stroke) for easy clicking; `pickAt()` chooses the closest outline among overlapping hits.
-- Selection is a Set of ids. Marquee: left→right = fully inside, right→left = touching. Moves preview with a `translate()` on the nodes and commit one `update_element` per element on mouse-up (`geometry.moveAttrs`: coords for primitives, a leading `translate()` for paths/polys/transformed elements).
-- Display strokes are 1 px (`vector-effect: non-scaling-stroke`, screen dash patterns); exported files use layer dash patterns in mm.
-- Per-browser view prefs (zoom, grid, snap, ruler unit) are in localStorage under `svgcnc.*`; the page always fits the document on load.
+- **State:** `GET /api/state[?since=V&instance=I]` (long-poll).
+- **Editing:** `POST /api/ops {ops,label}` · `POST /api/undo|redo`.
+- **Files and tabs:** `POST /api/file/new|open|close|activate|revert|save|saved-local|mkdir|delete|import` (import takes `svg | dxf (base64) | project`) · `GET /api/files` · `GET /api/browse?folder=`.
+- **Exports:** `GET /api/export/{cnc|cnc-dxf|parts|file|project}`.
+- **Other:** `POST /api/selection` · `POST /api/screenshot` · `GET /api/background`.
 
 ## MCP tools (server `svg-editor`, SSE on :8766)
 
-Document/files: `get_document_info, list_documents, new_document, open_document, save_document, set_canvas_size, export_cnc, undo, redo`
-Elements: `list_elements, add_element, add_svg (many at once, one undo step), update_element, remove_element (comma ids), set_element_layer, get_svg`
-Layers: `list_layers, add_layer, update_layer (rename/colour/line style/visible/locked/export/description), remove_layer, move_layer`
-Preview: `take_screenshot` (returns an image; needs the editor open in a browser), `set_background_image, remove_background_image`
+The server also sends workflow instructions to the client (`INSTRUCTIONS` in server.py).
 
-### Drawing with MCP
-1. `get_document_info` / `new_document(width, height)` (mm). Don't discard the user's unsaved work without asking.
-2. Put geometry on the right layer instead of passing colours: outlines → CUT_OUTSIDE, holes/slots/windows → CUT_INSIDE, marks/pockets → ENGRAVE, labels/dimensions → NOTES.
-3. Prefer `add_svg` with `<path>` markup for parts (one undo step); use `fill="none"`.
-4. `take_screenshot` to check, `save_document`, `export_cnc` for the shop file.
+- **Projects/tabs:** `get_document_info, list_documents, list_files, list_tabs, switch_tab, new_document, open_document, save_document, close_document, revert_document, set_canvas_size, set_material, undo, redo`
+- **Elements:** `list_elements, add_element, add_svg` (many shapes at once, one undo step), `update_element, remove_element, set_element_layer, move_elements, transform_elements, duplicate, reorder, clear_document, get_svg`
+- **Entities/3D:** `list_groups, group_elements, ungroup, update_group` (name, qty, assembly), `set_params`
+- **Layers:** `list_layers, add_layer, update_layer, remove_layer, move_layer` (with `depth` for pockets)
+- **Measure/selection:** `measure, add_dimension, get_selection, set_selection`
+- **Import/export:** `import_dxf, export_cnc` (svg|dxf), `export_svg, export_parts`
+- **Preview:** `take_screenshot(view="2d"|"3d")` (needs the editor open in a browser), `set_background_image, remove_background_image`
 
-## SVG for CNC guidelines
-- 1 unit = 1 mm; files carry `mm` width/height + viewBox. Don't scale in CAM.
-- Draw nominal geometry; kerf/tool offsets are CAM's job (CUT_OUTSIDE = outside offset, CUT_INSIDE = inside offset). Compensate manually only for press fits.
+### Working with MCP
+1. `get_document_info` / `list_tabs`. Never discard the user's unsaved work or close their tabs without asking.
+2. Use layers, not colours: outlines → CUT_OUTSIDE, holes/slots → CUT_INSIDE, pockets → a layer with `depth`, labels/dimensions → NOTES, bought parts → a non-export layer.
+3. Draw parts with `add_svg` (`<path>`, `fill="none"`). Group each part (`group_elements`), set `qty` and an `assembly` so part exports and the 3D preview work.
+4. Check with `take_screenshot` (2d and 3d). `save_document` writes the .svgcnc. Use `export_cnc(format="dxf")` / `export_parts` for the shop.
+
+## SVG/DXF for CNC guidelines
+- 1 unit = 1 mm; exports carry mm units. Don't scale in CAM.
+- Draw nominal geometry; kerf and tool offsets are CAM's job (CUT_OUTSIDE = outside offset, CUT_INSIDE = inside offset, pockets = pocket operation at the layer depth).
 - Inside corners get the tool radius; add dog-bones where a square part must fit.
-- Closed shapes with no gaps; no duplicate overlapping lines (cut twice); text converted to paths before engraving; no gradients/clips/effects.
+- Closed shapes with no gaps, no duplicate overlapping lines, text converted to paths before engraving, no gradients/clips/effects.

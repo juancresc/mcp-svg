@@ -1,7 +1,8 @@
 // Canvas view: renders the document, zoom/scroll, grid, rulers, and the tools
 // (select + move + marquee, pan, line, rect, circle, ellipse, text).
 
-import { app, emit, on, savePref, setSelection, elementById } from './state.js';
+import { app, emit, on, savePref, setSelection, elementById, itemAt, elementsOf, selectItems, selectedItems,
+         setContext, descendants, groupById, ancestors } from './state.js';
 import { NS, createNode, moveAttrs, bboxOf, unionBox, boxInside, boxTouches } from './geometry.js';
 import { api } from './api.js';
 import { modal, toast } from './ui.js';
@@ -12,6 +13,10 @@ const gBackground = document.getElementById('background');
 const gContent = document.getElementById('content');
 const gHits = document.getElementById('hits');
 const gOverlay = document.getElementById('overlay');
+const gMeasure = document.createElementNS('http://www.w3.org/2000/svg', 'g');   // measure tool layer
+gMeasure.id = 'measure';
+svg.appendChild(gMeasure);
+const breadcrumb = document.getElementById('breadcrumb');
 const rulerH = document.getElementById('ruler-h');
 const rulerV = document.getElementById('ruler-v');
 
@@ -45,6 +50,11 @@ export function render() {
     gBackground.appendChild(img);
   }
 
+  if (app.context && !groupById(app.context)) setContext(null);
+  const inContext = app.context ? new Set(descendants(app.context)) : null;
+  svg.classList.toggle('in-group', !!app.context);
+  renderBreadcrumb();
+  keyPointCache = null;
   nodes = new Map();
   hitNodes = new Map();
   const content = [], hits = [];
@@ -57,6 +67,7 @@ export function render() {
       const node = createNode(el, layer, { screen: true });
       node.dataset.id = el.id;
       if (app.selection.has(el.id)) node.classList.add('selected');
+      if (inContext && inContext.has(el.id)) node.classList.add('in-context');
       g.appendChild(node);
       nodes.set(el.id, node);
       if (layer.visible && !layer.locked) {
@@ -82,13 +93,93 @@ export function render() {
   else drawSelection();
 }
 
-export function drawSelection(dx = 0, dy = 0) {
+export function drawSelection() {
   for (const [id, node] of nodes) node.classList.toggle('selected', app.selection.has(id));
-  const boxes = [...app.selection].map(id => nodes.get(id) && bboxOf(nodes.get(id), svg)).filter(Boolean);
+  // One box per selected item (a group counts as one), plus overall dimensions
+  const items = selectedItems();
+  const loose = [...app.selection].filter(id => !items.some(it => elementsOf(it).includes(id)));
+  const boxOf = ids => unionBox(ids.map(id => nodes.get(id) && bboxOf(nodes.get(id), svg)));
+  const boxes = [...items.map(it => boxOf(elementsOf(it))), ...loose.map(id => boxOf([id]))].filter(Boolean);
   const px = 3 / app.zoom;
-  const rects = boxes.map(b => rectNode({ x: b.x - px + dx, y: b.y - px + dy, width: b.width + 2 * px, height: b.height + 2 * px }, 'sel-box'));
-  gOverlay.replaceChildren(...rects);
-  emit('selection-geometry', unionBox(boxes));
+  const out = boxes.map(b => rectNode({ x: b.x - px, y: b.y - px, width: b.width + 2 * px, height: b.height + 2 * px }, 'sel-box'));
+  const all = unionBox(boxes);
+  if (all && app.showDims) out.push(...dimensionNodes(all));
+  gOverlay.replaceChildren(...out);
+  emit('selection-geometry', all);
+}
+
+// Width (above) and height (right) of a box, drawn in screen-constant sizes
+function dimensionNodes(b) {
+  const k = 1 / app.zoom, off = 14 * k, ext = 4 * k;
+  const line = (x1, y1, x2, y2, cls) => {
+    const l = document.createElementNS(NS, 'line');
+    Object.entries({ x1, y1, x2, y2 }).forEach(([a, v]) => l.setAttribute(a, v));
+    l.setAttribute('class', cls);
+    return l;
+  };
+  const text = (x, y, s, rotate) => {
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('x', x); t.setAttribute('y', y);
+    t.setAttribute('class', 'dim-text');
+    t.setAttribute('text-anchor', 'middle');
+    t.setAttribute('font-size', 11 * k);
+    t.style.fontSize = (11 * k) + 'px';
+    t.style.strokeWidth = (3 * k) + 'px';
+    if (rotate) t.setAttribute('transform', `rotate(-90 ${x} ${y})`);
+    t.textContent = s;
+    return t;
+  };
+  const f = v => String(+v.toFixed(2));
+  const yTop = b.y - off, xRight = b.x + b.width + off;
+  return [
+    line(b.x, yTop, b.x + b.width, yTop, 'dim-line'),
+    line(b.x, b.y - ext, b.x, yTop - ext, 'dim-ext'), line(b.x + b.width, b.y - ext, b.x + b.width, yTop - ext, 'dim-ext'),
+    text(b.x + b.width / 2, yTop - 4 * k, f(b.width)),
+    line(xRight, b.y, xRight, b.y + b.height, 'dim-line'),
+    line(b.x + b.width + ext, b.y, xRight + ext, b.y, 'dim-ext'), line(b.x + b.width + ext, b.y + b.height, xRight + ext, b.y + b.height, 'dim-ext'),
+    text(xRight + 12 * k, b.y + b.height / 2, f(b.height), true),
+  ];
+}
+
+export function setShowDims(v) {
+  app.showDims = v;
+  savePref('showDims', v);
+  drawSelection();
+  emit('view');
+}
+
+function renderBreadcrumb() {
+  if (!app.context) { breadcrumb.hidden = true; return; }
+  const chain = ancestors(app.context).reverse();       // outermost first
+  breadcrumb.hidden = false;
+  breadcrumb.innerHTML = `<button data-ctx="">Top</button>` + chain.map((g, i) =>
+    ` › ${i === chain.length - 1 ? `<span class="here">${escHtml(groupById(g)?.name)}</span>` : `<button data-ctx="${g}">${escHtml(groupById(g)?.name)}</button>`}`).join('') +
+    `<span class="hint">Esc: go up · double-click: enter</span>`;
+}
+const escHtml = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+breadcrumb.addEventListener('click', (e) => {
+  const b = e.target.closest('[data-ctx]');
+  if (!b) return;
+  setSelection([]);
+  setContext(b.dataset.ctx || null);
+  render();
+});
+
+export function enterGroup(gid) {
+  if (!gid?.startsWith('g-')) return;
+  setContext(gid);
+  setSelection([]);
+  render();
+}
+
+export function exitGroup() {
+  if (!app.context) return false;
+  const up = groupById(app.context)?.parent ?? null;
+  const was = app.context;
+  setContext(up);
+  selectItems([was]);
+  render();
+  return true;
 }
 
 function rectNode(b, cls) {
@@ -98,6 +189,8 @@ function rectNode(b, cls) {
   r.setAttribute('class', cls);
   return r;
 }
+
+let keyPointCache = null;
 
 export function selectionBox() {
   return unionBox([...app.selection].map(id => nodes.get(id) && bboxOf(nodes.get(id), svg)));
@@ -247,6 +340,7 @@ const snapP = p => ({ x: snapV(p.x), y: snapV(p.y) });
 // ── Tools ──────────────────────────────────────────────────
 
 export function setTool(tool) {
+  if (tool !== 'measure') clearMeasure();
   app.tool = tool;
   svg.className.baseVal = 'tool-' + tool;
   cancelGesture();
@@ -254,6 +348,7 @@ export function setTool(tool) {
 }
 
 function cancelGesture() {
+  hideNumBox();
   if (gesture?.kind === 'move') resetMovePreview();
   if (gesture?.draft) gesture.draft.remove();
   gesture = null;
@@ -263,7 +358,9 @@ function cancelGesture() {
 
 export function cancel() {
   if (gesture) cancelGesture();
+  else if (measure) clearMeasure();
   else if (app.selection.size) setSelection([]);
+  else exitGroup();
 }
 
 function activeLayerUsable() {
@@ -277,6 +374,11 @@ function activeLayerUsable() {
 // Pointer handling lives on the scroll area, so clicks/marquees can start outside the page
 wrap.addEventListener('pointerdown', (e) => {
   if (!app.doc || e.button === 2) return;
+  if (gesture?.kind === 'draw' && gesture.clickMode) {   // second click of click–click drawing
+    e.preventDefault();
+    commitDraw();
+    return;
+  }
   // preventDefault below stops the browser moving focus: release panel inputs explicitly
   if (document.activeElement && document.activeElement !== document.body) document.activeElement.blur();
   if (e.target === wrap && (e.offsetX >= wrap.clientWidth || e.offsetY >= wrap.clientHeight)) return; // scrollbar
@@ -289,6 +391,11 @@ wrap.addEventListener('pointerdown', (e) => {
   } else if (app.tool === 'text') {
     if (e.target !== wrap) placeText(snapP(toDoc(e.clientX, e.clientY)));
     return;
+  } else if (app.tool === 'measure') {
+    const p = snapMeasure(e.clientX, e.clientY);
+    measure = { a: p, b: p, done: false };
+    gesture = { kind: 'measure' };
+    drawMeasure();
   } else {
     const layer = activeLayerUsable();
     if (!layer) return;
@@ -296,7 +403,7 @@ wrap.addEventListener('pointerdown', (e) => {
     const draft = document.createElementNS(NS, app.tool);
     draft.setAttribute('class', 'draft');
     gOverlay.appendChild(draft);
-    gesture = { kind: 'draw', tool: app.tool, start: p, draft, attrs: null };
+    gesture = { kind: 'draw', tool: app.tool, start: p, draft, attrs: null, x: e.clientX, y: e.clientY };
     updateDraft(p, e.shiftKey);
   }
   wrap.setPointerCapture(e.pointerId);
@@ -307,7 +414,7 @@ wrap.addEventListener('pointermove', (e) => {
   cursorDoc = toDoc(e.clientX, e.clientY);
   emit('cursor', cursorDoc);
   drawRulers();
-  if (!gesture) return;
+  if (!gesture) { if (app.tool === 'measure') showSnap(e.clientX, e.clientY); return; }
   const g = gesture;
   if (g.kind === 'pan') {
     wrap.scrollLeft = g.sl - (e.clientX - g.x);
@@ -336,13 +443,38 @@ wrap.addEventListener('pointermove', (e) => {
     g.node.setAttribute('class', 'marquee' + (g.touch ? ' touch' : ''));
     for (const k of ['x', 'y', 'width', 'height']) g.node.setAttribute(k, r[k]);
   } else if (g.kind === 'draw') {
+    if (!numBox.hidden) return;          // typing dimensions: the mouse doesn't change them
     updateDraft(snapP(toDoc(e.clientX, e.clientY)), e.shiftKey);
+    g.cx = e.clientX; g.cy = e.clientY;
+  } else if (g.kind === 'measure') {
+    let p = snapMeasure(e.clientX, e.clientY);
+    if (e.shiftKey) {  // constrain to 0/45/90°
+      const dx = p.x - measure.a.x, dy = p.y - measure.a.y;
+      const ang = Math.round(Math.atan2(dy, dx) / (Math.PI / 4)) * (Math.PI / 4), len = Math.hypot(dx, dy);
+      p = { x: measure.a.x + len * Math.cos(ang), y: measure.a.y + len * Math.sin(ang) };
+    }
+    measure.b = p;
+    drawMeasure();
   }
 });
 
 wrap.addEventListener('pointerup', (e) => finishGesture(e));
 wrap.addEventListener('pointercancel', () => cancelGesture());
 wrap.addEventListener('pointerleave', () => { if (!gesture) { cursorDoc = null; emit('cursor', null); drawRulers(); } });
+
+// Double-click: enter the group under the pointer (drill down one level)
+wrap.addEventListener('dblclick', (e) => {
+  if (app.tool !== 'select') return;
+  const eid = pickAt(e.clientX, e.clientY);
+  if (!eid) { exitGroup(); return; }
+  const item = itemAt(eid);
+  if (item?.startsWith('g-')) {
+    setContext(item);
+    render();
+    const inner = itemAt(eid);
+    if (inner) selectItems([inner]);
+  }
+});
 
 // Hover highlight follows the same closest-shape rule as clicking
 let hovered = null;
@@ -389,19 +521,26 @@ function screenDistance(node, cx, cy) {
 }
 
 function startSelect(e) {
-  const id = pickAt(e.clientX, e.clientY);
+  const eid = pickAt(e.clientX, e.clientY);
   const start = toDoc(e.clientX, e.clientY);
-  if (id) {
-    let sel = new Set(app.selection);
+  if (eid) {
+    let item = itemAt(eid);
+    if (!item) {                     // clicked outside the entered group: back to the top level
+      setContext(null);
+      render();
+      item = itemAt(eid);
+    }
+    const ids = elementsOf(item);
+    const wasSelected = ids.every(i => app.selection.has(i));
     if (e.shiftKey) {
-      sel.has(id) ? sel.delete(id) : sel.add(id);
+      const sel = new Set(app.selection);
+      ids.forEach(i => wasSelected ? sel.delete(i) : sel.add(i));
       setSelection(sel);
       gesture = null;
       return;
     }
-    const wasSelected = sel.has(id);
-    if (!wasSelected) setSelection([id]);
-    gesture = { kind: 'press', id, wasSelected, x: e.clientX, y: e.clientY, start };
+    if (!wasSelected) selectItems([item]);
+    gesture = { kind: 'press', id: item, wasSelected, x: e.clientX, y: e.clientY, start };
   } else {
     if (!e.shiftKey) setSelection([]);
     const node = rectNode({ ...start, width: 0, height: 0 }, 'marquee');
@@ -433,8 +572,8 @@ async function finishGesture(e) {
   gesture = null;
   svg.classList.remove('panning');
   if (g.kind === 'press') {
-    // Plain click on an already-selected element in a multi-selection: select just it
-    if (g.wasSelected && app.selection.size > 1) setSelection([g.id]);
+    // Plain click on an already-selected item in a multi-selection: select just it
+    if (g.wasSelected && selectedItems().length > 1) selectItems([g.id]);
   } else if (g.kind === 'move') {
     const { dx, dy, ids } = g;
     if (!dx && !dy) { resetMovePreview(g); if (pendingRender) render(); return; }
@@ -445,17 +584,33 @@ async function finishGesture(e) {
   } else if (g.kind === 'marquee') {
     g.node.remove();
     if (!g.rect || (g.rect.width < 1 / app.zoom && g.rect.height < 1 / app.zoom)) return;
-    const hitIds = [];
+    // Items at the current level: touching = any of its shapes touched; inside = all inside
+    const hit = new Set();
     for (const [id] of hitNodes) {
       const b = bboxOf(nodes.get(id), svg);
-      if (b && (g.touch ? boxTouches(b, g.rect) : boxInside(b, g.rect))) hitIds.push(id);
+      if (b && (g.touch ? boxTouches(b, g.rect) : boxInside(b, g.rect))) hit.add(id);
     }
-    setSelection(g.additive ? [...app.selection, ...hitIds] : hitIds);
+    const items = new Set([...hit].map(id => itemAt(id)).filter(Boolean));
+    const chosen = [...items].filter(it => {
+      const els = elementsOf(it).filter(id => hitNodes.has(id));
+      return g.touch ? els.some(id => hit.has(id)) : els.length && els.every(id => hit.has(id));
+    });
+    const ids = chosen.flatMap(elementsOf);
+    setSelection(g.additive ? [...app.selection, ...ids] : ids);
+  } else if (g.kind === 'measure') {
+    measure.done = true;
+    if (Math.hypot(measure.b.x - measure.a.x, measure.b.y - measure.a.y) < 1e-6) clearMeasure();
+    else drawMeasure();
   } else if (g.kind === 'draw') {
-    g.draft.remove();
-    if (!g.attrs) return;
-    const state = await api.ops([{ op: 'add_element', tag: g.tool, attrs: g.attrs, layer: app.activeLayer }], `Draw ${g.tool}`);
-    if (state?.results) setSelection([state.results[0]]);
+    if (!g.attrs || Math.hypot(e.clientX - g.x, e.clientY - g.y) < DRAG_THRESHOLD) {
+      // A click (no drag): keep drawing — move and click again, or type the size
+      g.clickMode = true;
+      gesture = g;
+      emit('drafting', g.attrs && { tool: g.tool, attrs: g.attrs, hint: true });
+      return;
+    }
+    gesture = g;
+    await commitDraw();
   }
   if (pendingRender) render();
 }
@@ -527,3 +682,251 @@ wrap.addEventListener('wheel', (e) => {
 wrap.addEventListener('scroll', drawRulers);
 window.addEventListener('resize', drawRulers);
 on('selection', drawSelection);
+
+
+// ── Measure tool ───────────────────────────────────────────
+// Drag to measure (snaps to shape corners, ends, centres and midpoints, else to the grid).
+// Enter adds the measurement to the NOTES layer as a dimension; Esc clears it.
+
+let measure = null;
+const SNAP_PX = 10;
+
+function keyPoints() {
+  if (keyPointCache) return keyPointCache;
+  const pts = [];
+  const root = svg.getScreenCTM().inverse();
+  for (const [id, node] of nodes) {
+    if (!hitNodes.has(id)) continue;
+    const el = elementById(id);
+    const m = root.multiply(node.getScreenCTM());
+    for (const [x, y] of localKeyPoints(el)) {
+      const p = new DOMPoint(x, y).matrixTransform(m);
+      pts.push({ x: p.x, y: p.y });
+    }
+  }
+  return (keyPointCache = pts);
+}
+
+function localKeyPoints(el) {
+  const a = el.attrs, n = k => parseFloat(a[k] || 0);
+  switch (el.tag) {
+    case 'line': return [[n('x1'), n('y1')], [n('x2'), n('y2')], [(n('x1') + n('x2')) / 2, (n('y1') + n('y2')) / 2]];
+    case 'rect': {
+      const x = n('x'), y = n('y'), w = n('width'), h = n('height');
+      return [[x, y], [x + w, y], [x, y + h], [x + w, y + h], [x + w / 2, y + h / 2], [x + w / 2, y], [x + w / 2, y + h], [x, y + h / 2], [x + w, y + h / 2]];
+    }
+    case 'circle': case 'ellipse': {
+      const cx = n('cx'), cy = n('cy'), rx = el.tag === 'circle' ? n('r') : n('rx'), ry = el.tag === 'circle' ? n('r') : n('ry');
+      return [[cx, cy], [cx - rx, cy], [cx + rx, cy], [cx, cy - ry], [cx, cy + ry]];
+    }
+    case 'polygon': case 'polyline': {
+      const v = (a.points || '').trim().split(/[\s,]+/).map(Number);
+      const out = [];
+      for (let i = 0; i + 1 < v.length; i += 2) out.push([v[i], v[i + 1]]);
+      return out;
+    }
+    case 'path': return pathVertices(a.d || '');
+    default: return [[n('x'), n('y')]];
+  }
+}
+
+/** Segment end points of a path (absolute), plus arc/circle centres for full circles. */
+function pathVertices(d) {
+  const toks = d.match(/[a-zA-Z]|-?(?:\d+\.?\d*|\.\d+)(?:e-?\d+)?/g) || [];
+  const out = [];
+  let i = 0, cmd = '', x = 0, y = 0, sx = 0, sy = 0;
+  const num = () => parseFloat(toks[i++]);
+  const counts = { M: 2, L: 2, H: 1, V: 1, C: 6, S: 4, Q: 4, T: 2, A: 7, Z: 0 };
+  while (i < toks.length) {
+    if (/[a-zA-Z]/.test(toks[i])) cmd = toks[i++];
+    const C = cmd.toUpperCase(), rel = cmd !== C;
+    if (C === 'Z') { x = sx; y = sy; continue; }
+    const v = [];
+    for (let k = 0; k < counts[C]; k++) v.push(num());
+    if (v.some(isNaN)) break;
+    let nx = x, ny = y;
+    if (C === 'H') nx = (rel ? x : 0) + v[0];
+    else if (C === 'V') ny = (rel ? y : 0) + v[0];
+    else { nx = (rel ? x : 0) + v[v.length - 2]; ny = (rel ? y : 0) + v[v.length - 1]; }
+    if (C === 'A' && Math.abs(v[0] - v[1]) < 1e-9 && v[3] === 1) {
+      // large arc of a circle: its centre is useful (hole centres)
+      out.push([(x + nx) / 2, (y + ny) / 2]);
+    }
+    if (C === 'M') { sx = nx; sy = ny; if (cmd === 'm') cmd = 'l'; else cmd = 'L'; }
+    x = nx; y = ny;
+    out.push([x, y]);
+  }
+  return out;
+}
+
+function snapMeasure(cx, cy) {
+  const p = toDoc(cx, cy);
+  const r = SNAP_PX / app.zoom;
+  let best = null, bd = r;
+  for (const k of keyPoints()) {
+    const d = Math.hypot(k.x - p.x, k.y - p.y);
+    if (d < bd) { bd = d; best = k; }
+  }
+  return best ? { ...best, snapped: true } : { ...snapP(p), snapped: false };
+}
+
+function showSnap(cx, cy) {
+  if (measure && !measure.done) return;
+  const p = snapMeasure(cx, cy);
+  gMeasure.querySelector('.snap-mark')?.remove();
+  if (p.snapped) {
+    const c = document.createElementNS(NS, 'circle');
+    c.setAttribute('cx', p.x); c.setAttribute('cy', p.y); c.setAttribute('r', 5 / app.zoom);
+    c.setAttribute('class', 'snap-mark');
+    gMeasure.appendChild(c);
+  }
+}
+
+function drawMeasure() {
+  gMeasure.replaceChildren();
+  if (!measure) return;
+  const { a, b } = measure, k = 1 / app.zoom;
+  const dx = b.x - a.x, dy = b.y - a.y, len = Math.hypot(dx, dy);
+  const ang = Math.atan2(-dy, dx) * 180 / Math.PI;
+  const mk = (tag, attrs, cls) => {
+    const n = document.createElementNS(NS, tag);
+    Object.entries(attrs).forEach(([key, v]) => n.setAttribute(key, v));
+    n.setAttribute('class', cls);
+    gMeasure.appendChild(n);
+    return n;
+  };
+  mk('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y }, 'measure-line');
+  mk('circle', { cx: a.x, cy: a.y, r: 3 * k }, 'measure-dot');
+  mk('circle', { cx: b.x, cy: b.y, r: 3 * k }, 'measure-dot');
+  const t = mk('text', { x: (a.x + b.x) / 2 + 8 * k, y: (a.y + b.y) / 2 - 8 * k }, 'measure-text');
+  t.style.fontSize = (12 * k) + 'px';
+  t.style.strokeWidth = (3 * k) + 'px';
+  const f = v => String(+v.toFixed(2));
+  t.textContent = `${f(len)} mm  (Δx ${f(Math.abs(dx))}, Δy ${f(Math.abs(dy))}, ${f(ang)}°)`;
+  emit('measure', { len, dx, dy, ang, done: measure.done });
+}
+
+export function clearMeasure() {
+  measure = null;
+  gMeasure.replaceChildren();
+  emit('measure', null);
+}
+
+export function currentMeasure() {
+  return measure?.done ? measure : null;
+}
+
+
+// ── Drawing with typed dimensions (CAD style) ──────────────
+// While a shape is being drawn (after its first point), typing a number opens a small box:
+// line = length + angle, rect = width + height, circle = diameter, ellipse = width + height.
+
+const numBox = document.createElement('form');
+numBox.className = 'num-box';
+numBox.hidden = true;
+document.querySelector('.canvas-area').appendChild(numBox);
+
+const FIELDS = {
+  line: [['len', 'Length', 'mm'], ['ang', 'Angle', '°']],
+  rect: [['w', 'Width', 'mm'], ['h', 'Height', 'mm']],
+  circle: [['d', 'Diameter', 'mm']],
+  ellipse: [['w', 'Width', 'mm'], ['h', 'Height', 'mm']],
+};
+
+export function isDrawing() {
+  return gesture?.kind === 'draw';
+}
+
+function currentValues(g) {
+  const a = g.attrs || {}, r = v => String(+(+v || 0).toFixed(3));
+  switch (g.tool) {
+    case 'line': {
+      const dx = (a.x2 ?? g.start.x) - g.start.x, dy = (a.y2 ?? g.start.y) - g.start.y;
+      return { len: r(Math.hypot(dx, dy)), ang: r(-Math.atan2(dy, dx) * 180 / Math.PI) };
+    }
+    case 'rect': return { w: r(a.width), h: r(a.height) };
+    case 'circle': return { d: r(2 * (a.r || 0)) };
+    case 'ellipse': return { w: r(2 * (a.rx || 0)), h: r(2 * (a.ry || 0)) };
+  }
+  return {};
+}
+
+/** Open the dimension box, starting with the typed character in the first field. */
+export function beginNumericEntry(firstKey) {
+  const g = gesture;
+  if (!g || g.kind !== 'draw' || !FIELDS[g.tool]) return;
+  const vals = currentValues(g);
+  numBox.innerHTML = FIELDS[g.tool].map(([k, label, unit], i) =>
+    `<label>${label}<input name="${k}" inputmode="decimal" value="${i === 0 && firstKey ? '' : vals[k]}" autocomplete="off"><span>${unit}</span></label>`).join('') +
+    '<button type="submit">↵</button>';
+  const area = document.querySelector('.canvas-area').getBoundingClientRect();
+  numBox.style.left = Math.min((g.cx ?? g.x) - area.left + 16, area.width - 260) + 'px';
+  numBox.style.top = Math.min((g.cy ?? g.y) - area.top + 16, area.height - 60) + 'px';
+  numBox.hidden = false;
+  const first = numBox.querySelector('input');
+  first.focus();
+  if (firstKey) first.value = firstKey; else first.select();
+  updateFromBox();
+}
+
+function hideNumBox() {
+  if (!numBox.hidden) { numBox.hidden = true; numBox.innerHTML = ''; }
+}
+
+function valuesFromBox() {
+  return Object.fromEntries([...numBox.querySelectorAll('input')].map(i => [i.name, parseFloat(i.value.replace(',', '.'))]));
+}
+
+// Live preview while typing
+function updateFromBox() {
+  const g = gesture;
+  if (!g || numBox.hidden) return;
+  const v = valuesFromBox(), s = g.start, prev = g.attrs || {};
+  const r3 = x => Math.round(x * 1000) / 1000;
+  let a = null;
+  switch (g.tool) {
+    case 'line':
+      if (v.len > 0) {
+        const ang = (isNaN(v.ang) ? 0 : v.ang) * Math.PI / 180;
+        a = { x1: s.x, y1: s.y, x2: r3(s.x + v.len * Math.cos(ang)), y2: r3(s.y - v.len * Math.sin(ang)) };
+      }
+      break;
+    case 'rect':
+      if (v.w > 0 && v.h > 0) {
+        // keep the direction the mouse was dragging in
+        const sx = prev.x !== undefined && prev.x < s.x ? -1 : 1, sy = prev.y !== undefined && prev.y < s.y ? -1 : 1;
+        a = { x: r3(sx < 0 ? s.x - v.w : s.x), y: r3(sy < 0 ? s.y - v.h : s.y), width: r3(v.w), height: r3(v.h) };
+      }
+      break;
+    case 'circle':
+      if (v.d > 0) a = { cx: s.x, cy: s.y, r: r3(v.d / 2) };
+      break;
+    case 'ellipse':
+      if (v.w > 0 && v.h > 0) a = { cx: s.x, cy: s.y, rx: r3(v.w / 2), ry: r3(v.h / 2) };
+      break;
+  }
+  if (a) {
+    g.attrs = a;
+    for (const [k, val] of Object.entries(a)) g.draft.setAttribute(k, val);
+    emit('drafting', { tool: g.tool, attrs: a });
+  }
+}
+
+numBox.addEventListener('input', updateFromBox);
+numBox.addEventListener('submit', (e) => { e.preventDefault(); updateFromBox(); commitDraw(); });
+numBox.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { e.preventDefault(); cancelGesture(); }
+  e.stopPropagation();
+});
+
+export async function commitDraw() {
+  const g = gesture;
+  if (!g || g.kind !== 'draw') return;
+  gesture = null;
+  hideNumBox();
+  g.draft.remove();
+  if (!g.attrs) return;
+  const state = await api.ops([{ op: 'add_element', tag: g.tool, attrs: g.attrs, layer: app.activeLayer }], `Draw ${g.tool}`);
+  if (state?.results) setSelection([state.results[0]]);
+  if (pendingRender) render();
+}

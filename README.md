@@ -1,15 +1,18 @@
-### MCP-first SVG CNC editor
+### MCP-first CNC design editor
 
-A web SVG editor for CNC cut drawings (1 unit = 1 mm) and an MCP server so Claude can draw, edit, and preview the same document.
+A browser CAD-style editor for CNC cut drawings (1 unit = 1 mm) with an MCP server, so Claude can draw, edit and preview the same documents live with you.
 
 [Demo](https://youtu.be/_wV0kU_m0hc)
 
-- File menu: New / Open / Save / Save As / Import / Export for CNC (SVG in mm) / PNG, with undo/redo
-- Layers you can rename, recolour, set solid/dashed/dotted, hide, lock, reorder, describe and exclude from CNC export
-- Select by click or box (left→right inside, right→left touching), move, nudge, duplicate; the inspector shows the selected shape with editable geometry
-- Documents are plain SVGs in `data/` (Inkscape layers, mm units); the session autosaves so nothing is lost on restart
+- **Projects** (`.svgcnc`) keep everything: layers, parts (entities), 3D placements, parameters, material & stock. Several open at once in tabs.
+- **Drawing:** click–click or drag, type exact sizes (length/angle, width/height, diameter), snapping, measuring tool, dimensions.
+- **Layers:** rename, colour, solid/dashed/dotted, lock, hide, reorder, description, CNC-export flag, **pocket depth**.
+- **Entities:** group a part's outline + holes. Double-click to edit inside, set quantity and 3D placement.
+- **3D preview** of the assembled design, with sliders (e.g. desk height). Export **GLB** / **STL**.
+- **Exports:** CNC **SVG** and **DXF** (mm, true arcs, circles), **parts for nesting** (SVG + DXF per part, zipped), SVG, PNG. **Imports:** SVG, DXF.
+- Undo/redo, autosave session, Open/Save As in the data folder or anywhere on your computer.
 
-Start the project
+Start
 ```
 docker compose up -d --build
 ```
@@ -26,10 +29,10 @@ claude
 
 Ask it to build something
 ```
-Draw a 400 × 300 mm box lid with four 8 mm holes 20 mm from the corners
+Draw a 400 × 300 mm box lid in 6 mm MDF with four 8 mm holes 20 mm from the corners, group it and show it in 3D
 ```
 
-Run the server tests
+Tests
 ```
 docker compose run --rm --no-deps -T --entrypoint python svg-mcp -m pytest -q tests
 ```

@@ -1,9 +1,11 @@
 // Right side: Layers panel and the Inspector (selected shape / document).
 
-import { app, on, emit, setSelection, selectedElements, layerOf } from './state.js';
+import { app, on, emit, setSelection, selectedElements, selectedItems, selectItems, elementsOf, groupById,
+         setContext, descendants } from './state.js';
 import { api } from './api.js';
 import { icons, esc, fmt, modal, toast, confirmDialog } from './ui.js';
 import { docToSvg, screenDashOf } from './geometry.js';
+import { PRESETS, MATERIAL_TYPES } from './materials.js';
 import * as canvas from './canvas.js';
 import * as actions from './actions.js';
 
@@ -32,15 +34,16 @@ export function renderLayers() {
     const i = doc.layers.indexOf(l);
     const open = expanded.has(l.name);
     return `<div class="layer ${l.name === app.activeLayer ? 'active' : ''} ${l.visible ? '' : 'hidden'}" data-layer="${esc(l.name)}" title="${esc(l.description)}">
-      <div class="layer-row">
-        <button class="icon-btn" data-act="expand" title="Details">${open ? icons.chevronDown : icons.chevron}</button>
-        <button class="icon-btn ${l.visible ? '' : 'off'}" data-act="visible" title="${l.visible ? 'Hide' : 'Show'}">${l.visible ? icons.eye : icons.eyeOff}</button>
-        <button class="icon-btn ${l.locked ? '' : 'off'}" data-act="lock" title="${l.locked ? 'Unlock' : 'Lock (not selectable)'}">${l.locked ? icons.lock : icons.unlock}</button>
+      <div class="layer-row" title="Click to draw on this layer · double-click the name to rename">
+        <button class="icon-btn small ${l.visible ? '' : 'off'}" data-act="visible" title="${l.visible ? 'Hide' : 'Show'}">${l.visible ? icons.eye : icons.eyeOff}</button>
+        <button class="icon-btn small ${l.locked ? '' : 'off'}" data-act="lock" title="${l.locked ? 'Unlock' : 'Lock (not selectable)'}">${l.locked ? icons.lock : icons.unlock}</button>
         <label class="swatch" style="background:${l.color}" title="Colour"><input type="color" value="${l.color}" data-act="color"></label>
-        <span class="layer-name" data-act="name" title="Double-click to rename">${esc(l.name)}</span>
+        <span class="layer-name" data-act="name">${esc(l.name)}</span>
         ${l.export ? '' : '<span class="no-export" title="Not included in CNC export">no cut</span>'}
+        ${l.depth ? `<span class="no-export" style="color:#6d28d9;border-color:#d8c8f5;background:#f5f0ff" title="Partial-depth cut (pocket) from the top face">${l.depth} mm</span>` : ''}
         <svg class="style-mini" viewBox="0 0 22 10"><line x1="1" y1="5" x2="21" y2="5" stroke="${l.color}" stroke-width="2" stroke-dasharray="${screenDashOf(l) || 'none'}" stroke-linecap="round"/></svg>
         <span class="layer-count">${counts[l.name] || 0}</span>
+        <button class="icon-btn small" data-act="expand" title="Details: description, line style, export, order">${open ? icons.chevronDown : icons.chevron}</button>
       </div>
       ${open ? `<div class="layer-details">
         <textarea data-act="description" placeholder="What is this layer for? (e.g. pocket 6 mm deep)">${esc(l.description)}</textarea>
@@ -50,6 +53,8 @@ export function renderLayers() {
             ${['solid', 'dashed', 'dotted'].includes(l.line_style) ? '' : `<option selected>${esc(l.line_style)}</option>`}
           </select></div>
         <label class="row"><input type="checkbox" data-act="export" ${l.export ? 'checked' : ''}> <span class="grow">Include in CNC export</span></label>
+        <div class="row"><span class="grow" title="Empty = cut all the way through. A number = pocket this deep from the top face.">Depth</span>
+          <input type="number" class="field" style="width:80px" min="0" step="any" data-act="depth" placeholder="through" value="${l.depth ?? ''}"> mm</div>
         <div class="row">
           <button class="icon-btn" data-act="up" title="Move up (draw on top)" ${i === doc.layers.length - 1 ? 'disabled' : ''}>${icons.up}</button>
           <button class="icon-btn" data-act="down" title="Move down" ${i === 0 ? 'disabled' : ''}>${icons.down}</button>
@@ -130,6 +135,7 @@ layersBox.addEventListener('change', (e) => {
   if (act === 'style') layerOp(name, { line_style: e.target.value }, 'Line style');
   if (act === 'export') layerOp(name, { export: e.target.checked }, 'Layer export');
   if (act === 'description') layerOp(name, { description: e.target.value }, 'Layer description');
+  if (act === 'depth') layerOp(name, { depth: e.target.value === '' ? null : +e.target.value }, 'Layer depth');
 });
 layersBox.addEventListener('focusout', () => setTimeout(() => { if (layersQueued) renderLayers(); }, 0));
 
@@ -171,12 +177,14 @@ export async function addLayer() {
       <label>Colour</label><input name="color" type="color" value="#8e44ad" style="width:60px;height:28px">
       <label>Line style</label><select name="line_style" class="field"><option>solid</option><option>dashed</option><option>dotted</option></select>
       <label>CNC export</label><label><input type="checkbox" name="export" checked> include when exporting</label>
+      <label>Depth</label><input name="depth" type="number" class="field" min="0" step="any" placeholder="empty = through-cut (mm for pockets)">
       <label>Description</label><textarea name="description" class="field" placeholder="e.g. Pocket, 6 mm deep, 6 mm end mill"></textarea>
     </div>`,
     buttons: [{ label: 'Cancel', value: false }, { label: 'Create', value: true, kind: 'primary' }],
     onSubmit: (form) => {
       v = { name: form.name.value.trim(), color: form.color.value, line_style: form.line_style.value,
-            export: form.export.checked, description: form.description.value.trim() };
+            export: form.export.checked, description: form.description.value.trim(),
+            depth: form.depth.value === '' ? null : +form.depth.value };
       return !!v.name;
     },
   });
@@ -206,6 +214,8 @@ export function renderInspector() {
   if (!doc) return;
   const sel = selectedElements();
   if (!sel.length) return renderDocumentInfo();
+  const items = selectedItems();
+  if (items.length === 1 && items[0].startsWith('g-')) return renderGroupInspector(groupById(items[0]), sel);
   const box = canvas.selectionBox();
   const preview = previewSvg(sel, box);
   const size = box ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—';
@@ -302,6 +312,7 @@ function bindShapeFields(el) {
 
 function renderDocumentInfo() {
   const doc = app.doc, s = app.server;
+  const m = doc.material || {};
   const counts = doc.layers.map(l => [l, doc.elements.filter(e => e.layer === l.name).length]);
   const active = doc.layers.find(l => l.name === app.activeLayer);
   inspector.innerHTML = `<h2>Document</h2>
@@ -315,15 +326,34 @@ function renderDocumentInfo() {
     <h3>CNC export</h3>
     <p class="hint">${counts.filter(([l]) => l.export && l.visible).map(([l, n]) => `${esc(l.name)} (${n})`).join(', ') || 'nothing'} will be exported.
       ${counts.filter(([l]) => !l.export).length ? `Not exported: ${counts.filter(([l]) => !l.export).map(([l]) => esc(l.name)).join(', ')}.` : ''}</p>
-    <h3>Reference image</h3>
-    ${doc.background ? `<div class="kv"><label>Opacity</label><input type="range" min="0" max="1" step="0.05" value="${doc.background.opacity}" data-bg-opacity></div>
-      <div class="btn-row"><button class="btn" data-bg-set>Replace…</button><button class="btn danger" data-bg-remove>Remove</button></div>`
-      : `<p class="hint">Trace over a photo or drawing. Saved with the document, never exported.</p><div class="btn-row"><button class="btn" data-bg-set>Set image…</button></div>`}
+    <h3>Material &amp; stock</h3>
+    <div class="kv">
+      <label>Preset</label><select data-m-preset><option value="">— choose —</option>${PRESETS.map((p, i) =>
+        `<option value="${i}">${esc(p.name)}</option>`).join('')}</select>
+      <label>Material</label><input type="text" data-m="name" value="${esc(m.name)}">
+      <label>Type</label><select data-m="type">${MATERIAL_TYPES.map(t => `<option ${t === m.type ? 'selected' : ''}>${t}</option>`).join('')}</select>
+      <label>Thickness</label><span class="unit" data-unit="mm"><input type="number" step="any" min="0.1" data-m="thickness" value="${m.thickness}"></span>
+      <label>Colour</label><div class="fill-row"><input type="color" data-m="color" value="${m.color || '#e3c592'}"><span class="hint">3D preview</span></div>
+      <label>Sheet</label><div class="pair"><span class="unit" data-unit="mm"><input type="number" step="any" data-m="sheet_width" value="${m.sheet_width}"></span>
+        <span class="unit" data-unit="mm"><input type="number" step="any" data-m="sheet_height" value="${m.sheet_height}"></span></div>
+      <label>Tool Ø</label><span class="unit" data-unit="mm"><input type="number" step="any" data-m="tool_diameter" value="${m.tool_diameter}"></span>
+      <label>Notes</label><textarea data-m="notes" placeholder="Supplier, grain direction, feeds…">${esc(m.notes || '')}</textarea>
+    </div>
+    ${doc.background ? `<h3>Reference image</h3><div class="kv"><label>Opacity</label><input type="range" min="0" max="1" step="0.05" value="${doc.background.opacity}" data-bg-opacity></div>
+      <div class="btn-row"><button class="btn danger" data-bg-remove>Remove image</button></div>` : ''}
     <h3>Tips</h3>
     <p class="hint">Click a shape to select it. Drag on empty space to box-select: left→right selects shapes fully inside, right→left selects anything touched. Shift adds. Arrows nudge (Shift ×10). Space-drag pans, ⌘-scroll zooms.</p>`;
   inspector.querySelector('[data-doc-size]').addEventListener('click', actions.documentSize);
   inspector.querySelector('[data-fit]').addEventListener('click', canvas.zoomFit);
-  inspector.querySelector('[data-bg-set]').addEventListener('click', actions.setBackground);
+  const setMat = (fields, label = 'Material') => api.ops([{ op: 'set_material', material: fields }], label);
+  inspector.querySelectorAll('[data-m]').forEach(inp => inp.addEventListener('change', () => {
+    const k = inp.dataset.m;
+    setMat({ [k]: inp.type === 'number' ? +inp.value : inp.value });
+  }));
+  inspector.querySelector('[data-m-preset]').addEventListener('change', (e) => {
+    const p = PRESETS[+e.target.value];
+    if (p) setMat({ name: p.name.replace(/ \d+.*$/, ''), type: p.type, thickness: p.thickness, color: p.color }, 'Material preset');
+  });
   inspector.querySelector('[data-bg-remove]')?.addEventListener('click', actions.removeBackground);
   inspector.querySelector('[data-bg-opacity]')?.addEventListener('change', (e) =>
     api.ops([{ op: 'set_background_opacity', opacity: +e.target.value }], 'Background opacity'));
@@ -344,3 +374,114 @@ inspector.addEventListener('focusout', () => setTimeout(() => { if (inspectorQue
 document.getElementById('layer-add').innerHTML = icons.plus;
 document.getElementById('layer-add').addEventListener('click', addLayer);
 on('selection', refreshInspector);
+
+
+// ── Entities panel ─────────────────────────────────────────
+
+const entitiesBox = document.getElementById('entities');
+
+export function renderEntities() {
+  const doc = app.doc;
+  if (!doc) return;
+  const groups = doc.groups || [];
+  const sel = new Set(selectedItems());
+  const counts = new Map(groups.map(g => [g.id, descendants(g.id).length]));
+  const loose = doc.elements.filter(e => !e.group).length;
+  const rows = [];
+  const walk = (parent, depth) => {
+    for (const g of groups.filter(g => (g.parent || null) === parent)) {
+      rows.push(`<div class="entity ${sel.has(g.id) ? 'selected' : ''}" data-gid="${g.id}" style="padding-left:${6 + depth * 14}px"
+        title="Click: select · double-click: enter (edit inside)">
+        <span class="ent-name">${esc(g.name)}</span>
+        ${g.assembly ? '<span class="ent-3d" title="Placed in the 3D preview">3D</span>' : ''}
+        <span class="ent-meta">×${g.qty} · ${counts.get(g.id)}</span></div>`);
+      walk(g.id, depth + 1);
+    }
+  };
+  walk(null, 0);
+  entitiesBox.innerHTML = rows.length
+    ? rows.join('') + (loose ? `<p class="entities-empty" style="margin-top:6px">${loose} shape(s) not in any entity</p>` : '')
+    : '<p class="entities-empty">No entities yet. Select the shapes of one part (outline + holes) and press ⌘G. Entities become separate part files and 3D parts.</p>';
+}
+
+entitiesBox.addEventListener('click', (e) => {
+  const row = e.target.closest('[data-gid]');
+  if (!row) return;
+  const g = groupById(row.dataset.gid);
+  if (!g) return;
+  if ((g.parent || null) !== app.context) setContext(g.parent || null);
+  canvas.render();
+  selectItems([g.id]);
+});
+entitiesBox.addEventListener('dblclick', (e) => {
+  const row = e.target.closest('[data-gid]');
+  if (row) canvas.enterGroup(row.dataset.gid);
+});
+document.getElementById('entity-add').innerHTML = icons.plus;
+document.getElementById('entity-add').addEventListener('click', actions.group);
+on('selection', renderEntities);
+
+// ── Inspector: entity ──────────────────────────────────────
+
+function renderGroupInspector(g, sel) {
+  const box = canvas.selectionBox();
+  const layers = [...new Set(sel.map(e => e.layer))];
+  const a = g.assembly;
+  const num = (v, d = 0) => (v === undefined || v === null ? d : v);
+  const params = app.doc.params || [];
+  inspector.innerHTML = `<h2>Entity <span class="tag-pill">${esc(g.id)}</span></h2>
+    <div class="preview" style="margin-top:8px">${previewSvg(sel, box)}</div>
+    <div class="kv">
+      <label>Name</label><input type="text" data-g="name" value="${esc(g.name)}">
+      <label>Quantity</label><input type="number" min="1" step="1" data-g="qty" value="${g.qty}">
+      <label>Contains</label><span class="val">${sel.length} shapes · ${layers.map(esc).join(', ')}</span>
+      <label>Bounds</label><span class="val">${box ? `${fmt(box.width)} × ${fmt(box.height)} mm` : '—'}</span>
+    </div>
+    <h3>3D placement</h3>
+    ${a ? `<div class="kv">
+      <label>Thickness</label><span class="unit" data-unit="mm"><input type="number" step="any" data-a="thickness" value="${num(a.thickness, 18)}"></span>
+      <label>Position</label><div class="pair" style="grid-template-columns:1fr 1fr 1fr">${[0, 1, 2].map(i => `<input type="number" step="any" data-a="position.${i}" value="${num(a.position?.[i])}" title="${'xyz'[i]} (mm)">`).join('')}</div>
+      <label>Rotation °</label><div class="pair" style="grid-template-columns:1fr 1fr 1fr">${[0, 1, 2].map(i => `<input type="number" step="any" data-a="rotation.${i}" value="${num(a.rotation?.[i])}" title="about ${'xyz'[i]}">`).join('')}</div>
+      <label>Moves with</label><select data-a="move"><option value="">— fixed —</option>${params.map(p =>
+        `<option value="${esc(p.name)}" ${a.move?.param === p.name ? 'selected' : ''}>${esc(p.label || p.name)}</option>`).join('')}</select>
+    </div>
+    <p class="hint" style="margin-top:6px">World: X = width, Y = up, Z = toward you. The part's outline is extruded by its thickness.</p>
+    <div class="btn-row"><button class="btn" data-open3d>Open 3D preview</button><button class="btn danger" data-a-clear>Remove from 3D</button></div>`
+    : `<p class="hint">Not placed in 3D yet: the preview lays it flat where it is on the sheet.</p>
+       <div class="btn-row"><button class="btn" data-a-init>Place in 3D…</button><button class="btn" data-open3d>Open 3D preview</button></div>`}
+    <div class="btn-row">
+      <button class="btn" data-enter>Enter (edit inside)</button>
+      <button class="btn" data-ungroup>Ungroup</button>
+      <button class="btn" data-action="duplicate">Duplicate</button>
+      <button class="btn" data-zoom>Zoom to</button>
+      <button class="btn danger" data-action="deleteSelection" style="grid-column: span 2">Delete entity</button>
+    </div>`;
+  const upd = (fields, label) => api.ops([{ op: 'update_group', id: g.id, ...fields }], label);
+  inspector.querySelector('[data-g="name"]').addEventListener('change', e => upd({ name: e.target.value }, 'Rename entity'));
+  inspector.querySelector('[data-g="qty"]').addEventListener('change', e => upd({ qty: +e.target.value || 1 }, 'Quantity'));
+  inspector.querySelectorAll('[data-a]').forEach(inp => inp.addEventListener('change', () => {
+    const next = JSON.parse(JSON.stringify(g.assembly || {}));
+    const key = inp.dataset.a;
+    if (key === 'move') {
+      if (inp.value) next.move = { param: inp.value, axis: next.move?.axis || [0, 1, 0] };
+      else delete next.move;
+    } else if (key.includes('.')) {
+      const [k, i] = key.split('.');
+      next[k] = next[k] || [0, 0, 0];
+      next[k][+i] = +inp.value || 0;
+    } else next[key] = +inp.value || 0;
+    upd({ assembly: next }, '3D placement');
+  }));
+  inspector.querySelector('[data-a-clear]')?.addEventListener('click', () => upd({ assembly: null }, 'Remove from 3D'));
+  inspector.querySelector('[data-a-init]')?.addEventListener('click', () => {
+    // Start as a flat board lying where it is on the sheet: sheet (x, y) → world (x, 0, y)
+    const b = box || { x: 0, y: 0, width: 0, height: 0 };
+    upd({ assembly: { matrix: [1, 0, 0, -1, -b.x, b.y + b.height], thickness: 18,
+                      position: [b.x, 0, b.y + b.height], rotation: [-90, 0, 0] } }, 'Place in 3D');
+  });
+  inspector.querySelector('[data-open3d]')?.addEventListener('click', () => actions.open3d());
+  inspector.querySelector('[data-enter]').addEventListener('click', () => canvas.enterGroup(g.id));
+  inspector.querySelector('[data-ungroup]').addEventListener('click', actions.ungroup);
+  inspector.querySelectorAll('[data-action]').forEach(b => b.addEventListener('click', () => actions[b.dataset.action]()));
+  inspector.querySelector('[data-zoom]').addEventListener('click', () => canvas.zoomToSelection());
+}

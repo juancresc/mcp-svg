@@ -10,6 +10,7 @@ attributes never carry them in the model — they are applied when rendering/ser
 from __future__ import annotations
 
 import copy
+import json
 import re
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass, field, asdict
@@ -19,7 +20,7 @@ SVG_NS = "http://www.w3.org/2000/svg"
 INKSCAPE_NS = "http://www.inkscape.org/namespaces/inkscape"
 SHAPE_TAGS = ("line", "rect", "circle", "ellipse", "text", "path", "polygon", "polyline")
 # Attributes owned by the layer or by the model itself
-LAYER_OWNED = {"stroke", "stroke-dasharray", "stroke-linecap", "id", "data-layer", "style"}
+LAYER_OWNED = {"stroke", "stroke-dasharray", "stroke-linecap", "id", "data-layer", "data-group", "style"}
 
 LINE_STYLES = {"solid": "", "dashed": "6 3", "dotted": "0.5 2.5"}
 HEX_COLOR = re.compile(r"^#[0-9a-fA-F]{6}$")
@@ -38,6 +39,7 @@ class Layer:
     locked: bool = False
     export: bool = True            # included in CNC export
     description: str = ""
+    depth: float | None = None     # partial-depth cut from the top face (pockets), mm; None = through
 
     def dasharray(self) -> str:
         return LINE_STYLES.get(self.line_style, self.line_style)
@@ -50,6 +52,20 @@ class Element:
     layer: str
     attrs: dict[str, str] = field(default_factory=dict)
     text: str = ""
+    group: str | None = None       # id of the group ("entity") it belongs to
+
+
+@dataclass
+class Group:
+    """A named entity (e.g. one part: outline + holes, possibly on several layers).
+    Groups can contain groups (parent). `qty` is for nesting/exports; `assembly` places the
+    part in 3D: {"matrix": [a,b,c,d,e,f] doc→part 2D, "thickness", "position": [x,y,z],
+    "rotation": [rx,ry,rz] degrees, "color", "move": {"param", "axis"}}."""
+    id: str
+    name: str
+    parent: str | None = None
+    qty: int = 1
+    assembly: dict | None = None
 
 
 DEFAULT_LAYER_DESCRIPTIONS = {
@@ -63,6 +79,39 @@ DEFAULT_LAYER_DESCRIPTIONS = {
 }
 
 
+DEFAULT_MATERIAL = {
+    "name": "Birch plywood",
+    "type": "plywood",         # plywood | wood | board | plastic | metal | foam | other
+    "color": "#e3c592",        # used by the 3D preview
+    "thickness": 18,           # mm — default part thickness (3D preview, CAM notes)
+    "sheet_width": 2440,       # stock sheet size, mm
+    "sheet_height": 1220,
+    "tool_diameter": 6,        # end mill, mm (for CAM notes / minimum inside radius)
+    "notes": "",
+}
+MATERIAL_NUMBERS = ("thickness", "sheet_width", "sheet_height", "tool_diameter")
+
+
+def clean_material(m: dict | None, base: dict | None = None) -> dict:
+    out = dict(base or DEFAULT_MATERIAL)
+    for k, v in (m or {}).items():
+        if k in MATERIAL_NUMBERS:
+            try:
+                v = float(v)
+            except (TypeError, ValueError):
+                raise DocError(f"Material {k} must be a number")
+            if not 0 < v <= 100000:
+                raise DocError(f"Material {k} must be greater than 0")
+            out[k] = num(v)
+        elif k in ("name", "notes", "type"):
+            out[k] = str(v)[:500]
+        elif k == "color":
+            if not HEX_COLOR.match(str(v)):
+                raise DocError("Material color must be #rrggbb")
+            out[k] = str(v)
+    return out
+
+
 def default_layers() -> list[Layer]:
     d = DEFAULT_LAYER_DESCRIPTIONS
     return [
@@ -71,6 +120,18 @@ def default_layers() -> list[Layer]:
         Layer("ENGRAVE", "#3498db", "solid", description=d["ENGRAVE"]),
         Layer("NOTES", "#2ecc71", "solid", export=False, description=d["NOTES"]),
     ]
+
+
+def check_depth(depth):
+    if depth in (None, "", 0):
+        return None
+    try:
+        d = float(depth)
+    except (TypeError, ValueError):
+        raise DocError("Layer depth must be a number of mm (or empty for through-cuts)")
+    if not 0 < d <= 1000:
+        raise DocError("Layer depth must be greater than 0 mm")
+    return num(d)
 
 
 def validate_layer_fields(color=None, line_style=None, name=None):
@@ -90,6 +151,9 @@ class Document:
     elements: list[Element] = field(default_factory=list)
     background: dict | None = None          # {"href": data-uri, "opacity": float}
     next_id: int = 1
+    groups: list[Group] = field(default_factory=list)
+    params: list[dict] = field(default_factory=list)   # 3D preview sliders, e.g. desk height
+    material: dict = field(default_factory=lambda: dict(DEFAULT_MATERIAL))
 
     # ── lookup ─────────────────────────────────────────────
     def layer(self, name: str) -> Layer:
@@ -113,13 +177,16 @@ class Document:
         return eid
 
     # ── elements ───────────────────────────────────────────
-    def add_element(self, tag: str, attrs: dict, text: str = "", layer: str | None = None) -> Element:
+    def add_element(self, tag: str, attrs: dict, text: str = "", layer: str | None = None,
+                    group: str | None = None) -> Element:
         check_attr_names(attrs)
         if tag not in SHAPE_TAGS:
             raise DocError(f"Unsupported tag '{tag}'. Use one of: {', '.join(SHAPE_TAGS)}")
         layer = layer or self.layers[0].name
         self.layer(layer)
-        el = Element(self.new_id(), tag, layer, clean_attrs(attrs), text or "")
+        if group:
+            self.group_by_id(group)
+        el = Element(self.new_id(), tag, layer, clean_attrs(attrs), text or "", group or None)
         self.elements.append(el)
         return el
 
@@ -149,7 +216,100 @@ class Document:
         if missing:
             raise DocError(f"Element(s) not found: {', '.join(sorted(missing))}")
         self.elements = [e for e in self.elements if e.id not in ids]
+        self.prune_groups()
         return len(ids)
+
+    # ── groups ("entities") ────────────────────────────────
+    def group_by_id(self, gid: str) -> Group:
+        for g in self.groups:
+            if g.id == gid:
+                return g
+        raise DocError(f"Group '{gid}' not found")
+
+    def parent_of(self, item: str) -> str | None:
+        return self.group_by_id(item).parent if item.startswith("g-") else self.element(item).group
+
+    def descendants(self, gid: str) -> list[str]:
+        """Element ids inside a group, at any depth."""
+        kids = {gid}
+        changed = True
+        while changed:
+            changed = False
+            for g in self.groups:
+                if g.parent in kids and g.id not in kids:
+                    kids.add(g.id); changed = True
+        return [e.id for e in self.elements if e.group in kids]
+
+    def ancestors(self, gid: str | None) -> list[str]:
+        out = []
+        while gid:
+            out.append(gid)
+            gid = self.group_by_id(gid).parent
+        return out
+
+    def new_group_id(self) -> str:
+        n = max([int(g.id[2:]) for g in self.groups if re.fullmatch(r"g-\d+", g.id)] + [0])
+        return f"g-{n + 1}"
+
+    def group(self, items: list[str], name: str | None = None, parent: str | None = None) -> Group:
+        """Group elements and/or groups that share the same parent (the current drill-down level)."""
+        items = list(dict.fromkeys(items or []))
+        if not items:
+            raise DocError("Nothing to group")
+        parents = {self.parent_of(i) for i in items}
+        if len(parents) != 1:
+            raise DocError("Items to group must be at the same level (same parent group)")
+        parent = parents.pop() if parent is None else parent
+        if parent:
+            self.group_by_id(parent)
+        g = Group(self.new_group_id(), (name or "").strip()[:80] or f"Entity {len(self.groups) + 1}", parent)
+        self.groups.append(g)
+        for i in items:
+            if i.startswith("g-"):
+                if i in self.ancestors(parent):
+                    raise DocError("Cannot put a group inside itself")
+                self.group_by_id(i).parent = g.id
+            else:
+                self.element(i).group = g.id
+        return g
+
+    def ungroup(self, gid: str) -> int:
+        g = self.group_by_id(gid)
+        n = 0
+        for e in self.elements:
+            if e.group == gid:
+                e.group = g.parent; n += 1
+        for c in self.groups:
+            if c.parent == gid:
+                c.parent = g.parent; n += 1
+        self.groups.remove(g)
+        return n
+
+    def update_group(self, gid: str, name: str | None = None, qty: int | None = None,
+                     assembly=...) -> Group:
+        g = self.group_by_id(gid)
+        if name is not None:
+            if not name.strip():
+                raise DocError("Entity name is empty")
+            g.name = name.strip()[:80]
+        if qty is not None:
+            if int(qty) < 1:
+                raise DocError("Quantity must be at least 1")
+            g.qty = int(qty)
+        if assembly is not ...:
+            if assembly is not None and not isinstance(assembly, dict):
+                raise DocError("assembly must be an object or null")
+            g.assembly = assembly
+        return g
+
+    def prune_groups(self):
+        """Drop groups left without any elements (after deletes)."""
+        while True:
+            used = {e.group for e in self.elements} | {g.parent for g in self.groups}
+            empty = [g for g in self.groups if g.id not in used]
+            if not empty:
+                return
+            self.groups = [g for g in self.groups if g not in empty]
 
     def reorder_element(self, eid: str, where: str):
         el = self.element(eid)
@@ -164,18 +324,18 @@ class Document:
     # ── layers ─────────────────────────────────────────────
     def add_layer(self, name: str, color: str = "#000000", line_style: str = "solid",
                   export: bool = True, visible: bool = True, locked: bool = False,
-                  description: str = "") -> Layer:
+                  description: str = "", depth: float | None = None) -> Layer:
         validate_layer_fields(color, line_style, name)
         if self.has_layer(name):
             raise DocError(f"Layer '{name}' already exists")
-        layer = Layer(name, color, line_style, visible, locked, export, (description or "")[:500])
+        layer = Layer(name, color, line_style, visible, locked, export, (description or "")[:500], check_depth(depth))
         self.layers.append(layer)
         return layer
 
     def update_layer(self, name: str, new_name: str | None = None, color: str | None = None,
                      line_style: str | None = None, visible: bool | None = None,
                      locked: bool | None = None, export: bool | None = None,
-                     description: str | None = None) -> Layer:
+                     description: str | None = None, depth=...) -> Layer:
         layer = self.layer(name)
         validate_layer_fields(color, line_style, new_name)
         if new_name and new_name != name:
@@ -191,6 +351,7 @@ class Document:
         if locked is not None: layer.locked = bool(locked)
         if export is not None: layer.export = bool(export)
         if description is not None: layer.description = description[:500]
+        if depth is not ...: layer.depth = check_depth(depth)
         return layer
 
     def remove_layer(self, name: str, move_to: str | None = None) -> int:
@@ -230,6 +391,9 @@ class Document:
             "elements": [asdict(e) for e in self.elements],
             "background": self.background,
             "next_id": self.next_id,
+            "groups": [asdict(g) for g in self.groups],
+            "params": self.params,
+            "material": self.material,
         }
 
     @classmethod
@@ -237,7 +401,9 @@ class Document:
         doc = cls(width=d["width"], height=d["height"],
                   layers=[Layer(**l) for l in d["layers"]],
                   elements=[Element(**e) for e in d["elements"]],
-                  background=d.get("background"), next_id=d.get("next_id", 1))
+                  background=d.get("background"), next_id=d.get("next_id", 1),
+                  groups=[Group(**g) for g in d.get("groups", [])], params=d.get("params", []),
+                  material=clean_material(d.get("material")))
         doc._fix_next_id()
         return doc
 
@@ -260,6 +426,10 @@ class Document:
             head.append(f' xmlns:inkscape="{INKSCAPE_NS}"')
         head.append(f' width="{w}mm" height="{h}mm" viewBox="0 0 {w} {h}">')
         out = ["".join(head)]
+        if mode == "file":
+            meta = json.dumps({"groups": [asdict(g) for g in self.groups], "params": self.params,
+                               "material": self.material})
+            out.append(f'  <metadata id="svgcnc" data-svgcnc={quoteattr(meta)}/>')
         if mode == "file" and self.background:
             out.append(f'  <image data-role="background" x="0" y="0" width="{w}" height="{h}" '
                        f'preserveAspectRatio="xMidYMid meet" opacity="{self.background.get("opacity", 0.3)}" '
@@ -276,10 +446,11 @@ class Document:
                 g += (f' data-color="{layer.color}" data-line-style={quoteattr(layer.line_style)}'
                       f' data-export="{str(layer.export).lower()}" data-locked="{str(layer.locked).lower()}"'
                       f' data-description={quoteattr(layer.description)}'
+                      f'{"" if layer.depth is None else f" data-depth={quoteattr(str(layer.depth))}"}'
                       f'{"" if layer.visible else " style=" + quoteattr("display:none")}')
             out.append(g + ">")
             for e in members:
-                out.append("    " + element_svg(e, layer, with_id=(mode != "cnc")))
+                out.append("    " + element_svg(e, layer, with_id=(mode != "cnc"), with_group=(mode == "file")))
             out.append("  </g>")
         out.append("</svg>")
         return "\n".join(out)
@@ -314,11 +485,36 @@ class Document:
                 if g.get("data-export"): layer.export = g.get("data-export") == "true"
                 if g.get("data-locked"): layer.locked = g.get("data-locked") == "true"
                 if g.get("data-description") is not None: layer.description = g.get("data-description")
+                if g.get("data-depth"):
+                    try: layer.depth = check_depth(g.get("data-depth"))
+                    except DocError: pass
                 if "display:none" in (g.get("style") or "").replace(" ", ""): layer.visible = False
             doc.layers.append(layer)
 
         fallback = default_layer or (doc.layers[0].name if doc.layers else "CUT_OUTSIDE")
         found_real_layers = False
+
+        # Groups ("entities") and 3D parameters from our metadata; ids are remapped on import
+        group_map: dict[str, str] = {}
+        meta = next((m for m in root.iter() if local(m.tag) == "metadata" and m.get("data-svgcnc")), None)
+        if meta is not None:
+            try:
+                data = json.loads(meta.get("data-svgcnc"))
+                incoming = [Group(**{k: g.get(k) for k in ("id", "name", "parent", "qty", "assembly") if k in g})
+                            for g in data.get("groups", [])]
+                for g in incoming:
+                    group_map[g.id] = doc.new_group_id() if base else g.id
+                    doc.groups.append(Group(group_map[g.id], str(g.name or "Entity")[:80], None,
+                                            max(1, int(g.qty or 1)), g.assembly if isinstance(g.assembly, dict) else None))
+                for g in incoming:
+                    if g.parent in group_map:
+                        doc.group_by_id(group_map[g.id]).parent = group_map[g.parent]
+                if not base and isinstance(data.get("params"), list):
+                    doc.params = data["params"]
+                if not base and isinstance(data.get("material"), dict):
+                    doc.material = clean_material(data["material"])
+            except (ValueError, TypeError) as e:
+                raise DocError(f"Invalid entity metadata: {e}")
 
         def walk(node, layer_name, transform):
             for child in node:
@@ -353,13 +549,14 @@ class Document:
                 eid = attrs.get("id", "")
                 if not re.fullmatch(r"el-\d+", eid) or any(e.id == eid for e in doc.elements):
                     eid = ""
+                gid = group_map.get(child.get("data-group") or "")
                 lines = text_lines(child) if tag == "text" else None
                 if lines:  # multi-line text (positioned <tspan>s): one text element per line
                     for i, (line_attrs, line) in enumerate(lines):
                         doc.elements.append(Element(eid if i == 0 else "", tag, name,
-                                                    clean_attrs({**attrs, **line_attrs}), line))
+                                                    clean_attrs({**attrs, **line_attrs}), line, gid))
                     continue
-                el = Element(eid, tag, name, clean_attrs(attrs), "".join(child.itertext()) if tag == "text" else "")
+                el = Element(eid, tag, name, clean_attrs(attrs), "".join(child.itertext()) if tag == "text" else "", gid)
                 doc.elements.append(el)
 
         walk(root, fallback, root_transform)
@@ -373,13 +570,16 @@ class Document:
                 e.id = doc.new_id()
             if not doc.has_layer(e.layer):
                 ensure_layer(e.layer)
+        doc.prune_groups()
         return doc
 
 
 # ── helpers ────────────────────────────────────────────────
 
-def element_svg(e: Element, layer: Layer, with_id: bool = True) -> str:
+def element_svg(e: Element, layer: Layer, with_id: bool = True, with_group: bool = False) -> str:
     attrs = dict(e.attrs)
+    if with_group and e.group:
+        attrs["data-group"] = e.group
     if e.tag == "text":
         attrs.setdefault("fill", layer.color)
         if attrs.get("fill") not in ("none",):
@@ -506,3 +706,33 @@ def num(v) -> float:
 def fmt(v) -> str:
     f = round(float(v), 6)
     return str(int(f)) if f == int(f) else repr(f)
+
+
+# ── Native project file (.svgcnc) ──────────────────────────
+# Everything the editor knows (layers, entities, 3D placements, parameters, material,
+# reference image) in one JSON file. SVG and DXF are exports.
+
+NATIVE_FORMAT = "svgcnc"
+NATIVE_VERSION = 1
+
+
+def to_native(doc: Document) -> str:
+    return json.dumps({"format": NATIVE_FORMAT, "version": NATIVE_VERSION, "document": doc.to_json()},
+                      ensure_ascii=False, indent=1)
+
+
+def from_native(text: str) -> Document:
+    try:
+        data = json.loads(text)
+    except ValueError as e:
+        raise DocError(f"Not a valid .svgcnc file: {e}")
+    if not isinstance(data, dict) or data.get("format") != NATIVE_FORMAT:
+        raise DocError("Not a .svgcnc project file")
+    if int(data.get("version", 0)) > NATIVE_VERSION:
+        raise DocError("This file was saved by a newer version of the editor")
+    try:
+        doc = Document.from_json(data["document"])
+    except (KeyError, TypeError) as e:
+        raise DocError(f"Damaged .svgcnc file: {e}")
+    doc.prune_groups()
+    return doc

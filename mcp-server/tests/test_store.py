@@ -68,7 +68,7 @@ def test_layer_crud(store):
 def test_visibility_is_not_an_undo_step_and_not_dirty(store):
     store.save("a")
     store.apply([{"op": "set_layer_visibility", "name": "NOTES", "visible": False}])
-    assert not store.dirty and not store.undo_stack
+    assert not store.dirty and not store.tab.undo_stack
     assert not store.doc.layer("NOTES").visible
 
 
@@ -86,12 +86,16 @@ def test_save_open_roundtrip(store, tmp_path):
     store.apply([{"op": "add_element", "tag": "text", "attrs": {"x": 5, "y": 5}, "text": "A & <B>",
                   "layer": "NOTES"}])
     saved = store.save("sub/part one")
-    assert saved == "sub/part one.svg" and not store.dirty
-    svg = (tmp_path / saved).read_text()
+    assert saved == "sub/part one.svgcnc" and not store.dirty
+    assert json.loads((tmp_path / saved).read_text())["format"] == "svgcnc"
+    svg = store.doc.to_svg("file")                      # the SVG export
     assert 'width="2440mm"' in svg and 'viewBox="0 0 2440 1220"' in svg
     assert 'inkscape:groupmode="layer"' in svg and 'stroke="#0000ff"' in svg
+    store.import_svg(svg, new_tab=True)                # and SVG exports read back the same
+    assert store.doc.layer("DRILL").description == "hand drill"
+    store.close(discard=True)
 
-    store.new(discard=True)
+    store.new()
     store.open("sub/part one")
     d = store.doc
     assert (d.width, d.height) == (2440, 1220)
@@ -112,15 +116,29 @@ def test_cnc_export_skips_non_export_and_hidden_layers(store):
     assert svg.count("<rect") == 1 and 'width="800mm"' in svg and "inkscape" not in svg
 
 
-def test_unsaved_changes_protect_open_and_new(store):
+def test_tabs_open_switch_close(store):
+    first = store.active_id
     store.save("one")
-    add_rect(store)
+    add_rect(store)                       # "one" now has unsaved changes
+    store.new()                           # new tab; "one" keeps its changes
+    assert len(store.tabs) == 2 and store.active_id != first and not store.doc.elements
+    store.open("one")                     # already open → switches to it
+    assert store.active_id == first and store.dirty
     with pytest.raises(DocError, match="unsaved"):
-        store.new()
-    with pytest.raises(DocError, match="unsaved"):
-        store.open("one")
-    store.open("one", discard=True)
-    assert not store.doc.elements
+        store.close()
+    store.close(discard=True)
+    assert len(store.tabs) == 1 and first not in store.tabs
+
+
+def test_pristine_untitled_tab_is_reused(store):
+    store.save("a")
+    store.new()
+    t = store.active_id
+    store.open("a")                       # "a" is open already: switch, keep the empty tab
+    assert t in store.tabs
+    store.activate(t)
+    store.new()                           # replaces the untouched empty tab
+    assert t not in store.tabs
 
 
 @pytest.mark.parametrize("name", ["../x", "/etc/passwd", ".hidden", "a/../../b", ""])
@@ -134,7 +152,7 @@ def test_import_plain_and_legacy_svg(store):
               '<rect id="el-7" x="1" y="2" width="3" height="4" stroke="#e74c3c" data-layer="CUT_INSIDE"/>'
               '<g transform="translate(10,0)"><circle cx="5" cy="5" r="2" style="fill:none;stroke:red"/></g>'
               '</svg>')
-    store.import_svg(legacy, replace=True, discard=True)
+    store.import_svg(legacy, new_tab=True)
     d = store.doc
     assert (d.width, d.height) == (500, 400)
     assert d.element("el-7").layer == "CUT_INSIDE"
@@ -150,9 +168,12 @@ def test_import_plain_and_legacy_svg(store):
 def test_session_survives_restart(tmp_path):
     s1 = Store(tmp_path)
     add_rect(s1)
+    s1.new()
     s1.flush_session()
     s2 = Store(tmp_path)
-    assert len(s2.doc.elements) == 1 and s2.dirty
+    assert len(s2.tabs) == 2 and s2.active_id == s1.active_id
+    first = next(iter(s2.tabs.values()))
+    assert len(first.doc.elements) == 1 and first.dirty
 
 
 def test_wait_for_change_times_out(store):
@@ -169,7 +190,7 @@ def test_json_roundtrip():
 def test_plain_svg_gets_standard_layers_in_order(store):
     store.import_svg('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10">'
                      '<rect data-layer="NOTES" width="1" height="1"/><rect data-layer="DRILL" width="1" height="1"/></svg>',
-                     replace=True, discard=True)
+                     new_tab=True)
     assert [l.name for l in store.doc.layers] == ["CUT_OUTSIDE", "CUT_INSIDE", "ENGRAVE", "NOTES", "DRILL"]
     assert store.doc.layer("CUT_INSIDE").description
 
@@ -199,12 +220,12 @@ def test_bad_attribute_names_are_rejected(store):
 
 def test_import_scales_physical_units_to_mm(store):
     store.import_svg('<svg xmlns="http://www.w3.org/2000/svg" width="4in" height="2in" viewBox="0 0 384 192">'
-                     '<rect x="0" y="0" width="96" height="96"/></svg>', replace=True, discard=True)
+                     '<rect x="0" y="0" width="96" height="96"/></svg>', new_tab=True)
     d = store.doc
     assert (d.width, d.height) == (101.6, 50.8)
     assert d.elements[0].attrs["transform"].startswith("scale(0.264583")
     store.import_svg('<svg xmlns="http://www.w3.org/2000/svg" width="100mm" height="50mm" viewBox="10 10 100 50">'
-                     '<circle cx="20" cy="20" r="5"/></svg>', replace=True, discard=True)
+                     '<circle cx="20" cy="20" r="5"/></svg>', new_tab=True)
     assert store.doc.elements[0].attrs["transform"] == "translate(-10, -10)"
 
 
@@ -215,7 +236,7 @@ def test_import_drops_hidden_unsafe_and_namespaced(store):
            '<path d="M0 0 L5 5" sodipodi:type="arc" onmouseover="alert(1)"/>'
            '<text x="1" y="2" style="text-anchor:middle;font-weight:bold"><tspan x="1" y="2">Line1</tspan><tspan x="1" y="8">Line2</tspan></text>'
            '</svg>')
-    store.import_svg(svg, replace=True, discard=True)
+    store.import_svg(svg, new_tab=True)
     els = store.doc.elements
     assert [e.tag for e in els] == ["path", "text", "text"]
     assert els[0].attrs == {"d": "M0 0 L5 5"}
@@ -230,3 +251,109 @@ def test_state_hides_background_data_and_consumes_screenshot(store):
     store.screenshot_requested = True
     assert store.state(consume_screenshot=True)["screenshot_requested"] is True
     assert store.screenshot_requested is False
+
+
+def test_groups_nest_ungroup_prune_and_roundtrip(store, tmp_path):
+    a, b, c = add_rect(store), add_rect(store, layer="CUT_INSIDE"), add_rect(store)
+    [g1] = store.apply([{"op": "group", "items": [a, b], "name": "Part A"}])
+    [g2] = store.apply([{"op": "group", "items": [g1, c], "name": "Assembly"}])
+    d = store.doc
+    assert set(d.descendants(g2)) == {a, b, c} and d.group_by_id(g1).parent == g2
+    with pytest.raises(DocError, match="same level"):
+        store.apply([{"op": "group", "items": [a, c]}])
+    store.apply([{"op": "update_group", "id": g1, "qty": 2,
+                  "assembly": {"thickness": 18, "position": [0, 0, 0], "rotation": [0, 90, 0]}}])
+    store.apply([{"op": "set_params", "params": [{"name": "lift", "min": 0, "max": 450}]}])
+    store.save("grouped")
+    store.new()
+    store.open("grouped")
+    d = store.doc
+    names = {g.name: g for g in d.groups}
+    assert names["Part A"].parent == names["Assembly"].id and names["Part A"].qty == 2
+    assert names["Part A"].assembly["rotation"] == [0, 90, 0] and d.params[0]["name"] == "lift"
+    assert d.element(a).group == names["Part A"].id
+    # importing the same file into it remaps group ids (no clashes)
+    store.import_svg(store.doc.to_svg("file"))
+    assert len(store.doc.groups) == 4 and len({g.id for g in store.doc.groups}) == 4
+    store.undo()
+    store.apply([{"op": "ungroup", "id": names["Assembly"].id}])
+    assert store.doc.group_by_id(names["Part A"].id).parent is None
+    store.apply([{"op": "remove_elements", "ids": [a, b]}])      # empties Part A → pruned
+    assert not any(g.name == "Part A" for g in store.doc.groups)
+
+
+def test_dxf_export_and_import_roundtrip(store):
+    from export import cnc_dxf, dxf_to_svg
+    store.apply([{"op": "set_size", "width": 300, "height": 200},
+                 {"op": "add_element", "tag": "path", "layer": "CUT_OUTSIDE",
+                  "attrs": {"d": "M 10 10 L 110 10 A 20 20 0 0 1 130 30 L 130 90 L 10 90 Z"}},
+                 {"op": "add_element", "tag": "path", "layer": "CUT_INSIDE",
+                  "attrs": {"d": "M 40 50 A 6 6 0 1 0 52 50 A 6 6 0 1 0 40 50 Z"}},
+                 {"op": "add_element", "tag": "circle", "layer": "CUT_INSIDE", "attrs": {"cx": 80, "cy": 50, "r": 4}},
+                 {"op": "add_element", "tag": "rect", "layer": "NOTES", "attrs": {"x": 0, "y": 0, "width": 5, "height": 5}}])
+    data = cnc_dxf(store.doc)
+    import ezdxf, io
+    dx = ezdxf.read(io.StringIO(data.decode()))
+    ents = [(e.dxftype(), e.dxf.layer) for e in dx.modelspace()]
+    assert sorted(ents) == [("CIRCLE", "CUT_INSIDE"), ("CIRCLE", "CUT_INSIDE"), ("LWPOLYLINE", "CUT_OUTSIDE")]
+    poly = next(e for e in dx.modelspace() if e.dxftype() == "LWPOLYLINE")
+    assert poly.closed and any(abs(b) > 0.1 for *_, b in poly.get_points("xyb"))      # the R20 arc
+    circles = sorted(round(e.dxf.radius, 3) for e in dx.modelspace() if e.dxftype() == "CIRCLE")
+    assert circles == [4, 6]
+    assert dx.header["$INSUNITS"] == 4
+    # and back: import produces the same geometry size
+    store.import_svg(dxf_to_svg(data), new_tab=True)
+    d = store.doc
+    assert {l.name for l in d.layers} >= {"CUT_OUTSIDE", "CUT_INSIDE"}
+    assert len(d.elements) == 3 and round(d.width, 1) == 120 + 20 and round(d.height, 1) == 80 + 20
+
+
+def test_parts_export_per_entity(store):
+    from export import part_files
+    a = store.apply([{"op": "add_element", "tag": "rect", "layer": "CUT_OUTSIDE",
+                      "attrs": {"x": 500, "y": 300, "width": 100, "height": 40}}])[0]
+    b = store.apply([{"op": "add_element", "tag": "circle", "layer": "CUT_INSIDE",
+                      "attrs": {"cx": 520, "cy": 320, "r": 5}}])[0]
+    n = store.apply([{"op": "add_element", "tag": "text", "layer": "NOTES", "text": "label",
+                      "attrs": {"x": 500, "y": 300}}])[0]
+    with pytest.raises(DocError, match="No entities"):
+        part_files(store.doc)
+    [g] = store.apply([{"op": "group", "items": [a, b, n], "name": "Rail"}])
+    store.apply([{"op": "update_group", "id": g, "qty": 4}])
+    files = dict(part_files(store.doc))
+    assert set(files) == {"rail_x4.svg", "rail_x4.dxf"}
+    svg = files["rail_x4.svg"].decode()
+    assert 'width="100.000mm"' in svg and "translate(-500.000, -300.000)" in svg and "label" not in svg
+
+
+def test_native_project_keeps_everything_and_svg_opens_as_new_tab(store, tmp_path):
+    store.apply([{"op": "set_material", "material": {"name": "MDF", "thickness": 12, "sheet_width": 1220}},
+                 {"op": "set_background", "href": "data:image/png;base64,AAAA", "opacity": 0.4}])
+    add_rect(store)
+    store.save("proj")
+    store.new()
+    store.open("proj")
+    d = store.doc
+    assert d.material["name"] == "MDF" and d.material["thickness"] == 12 and d.material["sheet_height"] == 1220
+    assert d.background["opacity"] == 0.4 and store.file == "proj.svgcnc"
+    with pytest.raises(DocError):
+        store.apply([{"op": "set_material", "material": {"thickness": -1}}])
+    (tmp_path / "drawing.svg").write_text('<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 10 10"><rect width="3" height="3"/></svg>')
+    store.open("drawing.svg")
+    assert store.file is None and not store.dirty and store.tab.name == "drawing"
+    assert store.save("drawing") == "drawing.svgcnc"   # saving makes it a project
+    kinds = {f["file"]: f["kind"] for f in store.list_files()}
+    assert kinds == {"proj.svgcnc": "svgcnc", "drawing.svg": "svg", "drawing.svgcnc": "svgcnc"}
+
+
+def test_layer_depth_roundtrip(store):
+    store.apply([{"op": "add_layer", "name": "POCKET", "color": "#8e44ad", "depth": 9}])
+    assert store.doc.layer("POCKET").depth == 9
+    svg = store.doc.to_svg("file")
+    assert 'data-depth="9"' in svg
+    store.import_svg(svg, new_tab=True)
+    assert store.doc.layer("POCKET").depth == 9
+    store.apply([{"op": "update_layer", "name": "POCKET", "depth": None}])
+    assert store.doc.layer("POCKET").depth is None
+    with pytest.raises(DocError):
+        store.apply([{"op": "update_layer", "name": "POCKET", "depth": -3}])

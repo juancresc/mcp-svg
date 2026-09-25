@@ -19,6 +19,7 @@ from aiohttp import web
 from mcp.server.fastmcp import FastMCP, Image
 
 from document import DocError, LINE_STYLES
+from export import cnc_dxf, dxf_to_svg, parts_zip, part_files, bbox, parse_transform
 from store import Store
 
 logging.basicConfig(level=logging.INFO, stream=sys.stderr, format="%(asctime)s %(message)s")
@@ -34,7 +35,17 @@ MCP_PORT = int(os.environ.get("MCP_PORT", "8766"))
 store = Store(DATA_DIR)
 # Changes on every start; lets the browser notice a restart and reload the state
 INSTANCE_ID = uuid.uuid4().hex
-mcp = FastMCP("svg-editor", host="0.0.0.0", port=MCP_PORT)
+INSTRUCTIONS = """SVG CNC editor shared with the user (they see every change live at http://localhost:8765).
+- Units: 1 SVG unit = 1 mm. Stroke colour/line style come from the element's LAYER, never pass them.
+- Layers: CUT_OUTSIDE = part outlines, CUT_INSIDE = holes/slots/windows, ENGRAVE = partial depth,
+  NOTES = labels/dimensions (never cut), HARDWARE = bought parts for the 3D preview (never cut).
+- Entities (groups) = parts: group each part's outline + holes (group_elements), set qty and a 3D
+  placement (update_group) so export_parts and the 3D preview work.
+- Several documents can be open (tabs); all tools act on the active tab (list_tabs / switch_tab).
+- get_selection tells you what the user selected ("this part"); set_selection highlights for them.
+- Check your work with take_screenshot (view "2d" or "3d"). Prefer add_svg for many shapes (one undo).
+- Never discard the user's unsaved work or close their tabs without asking."""
+mcp = FastMCP("svg-editor", host="0.0.0.0", port=MCP_PORT, instructions=INSTRUCTIONS)
 
 
 def tool(fn):
@@ -64,9 +75,10 @@ def ids_arg(value: str) -> list[str]:
 def summary() -> dict:
     s = store.state(include_doc=False)
     d = store.doc
-    return {"file": s["file"], "name": s["name"], "dirty": s["dirty"],
+    return {"tab": s["active"], "file": s["file"], "name": s["name"], "dirty": s["dirty"],
             "width_mm": d.width, "height_mm": d.height, "elements": len(d.elements),
-            "layers": [l.name for l in d.layers], "can_undo": s["can_undo"], "can_redo": s["can_redo"]}
+            "entities": len(d.groups), "layers": [l.name for l in d.layers], "material": d.material,
+            "can_undo": s["can_undo"], "can_redo": s["can_redo"], "open_tabs": store.list_tabs()}
 
 
 # ── MCP: document & files ──────────────────────────────────
@@ -80,42 +92,65 @@ def get_document_info() -> str:
 
 @tool
 def list_documents() -> str:
-    """List saved SVG documents in the data folder (paths relative to it; subfolders allowed)."""
+    """Projects (.svgcnc) and importable drawings (.svg, .dxf) in the data folder."""
     return json.dumps({"files": store.list_files(), "open": store.file})
 
 
 @tool
-def new_document(width: float = 800, height: float = 600, discard_changes: bool = False) -> str:
-    """Start a new, empty, unsaved document with the default CNC layers.
+def new_document(width: float = 800, height: float = 600) -> str:
+    """Open a new, empty document (default CNC layers) in a new tab and make it active.
 
     Args:
         width: Width in mm.
         height: Height in mm.
-        discard_changes: Must be true if the open document has unsaved changes (they are lost).
     """
-    store.new(width, height, discard_changes)
+    store.new(width, height)
     return json.dumps(summary())
 
 
 @tool
-def open_document(file: str, discard_changes: bool = False) -> str:
-    """Open a saved document from the data folder (e.g. "desk/desk.svg").
+def open_document(file: str) -> str:
+    """Open a project from the data folder in a new tab (or switch to its tab if already open).
+    Projects are .svgcnc files ("desk/desk" finds desk/desk.svgcnc). An .svg or .dxf opens as a
+    new unsaved tab (saving it creates a .svgcnc).
 
     Args:
-        file: Path relative to the data folder; ".svg" is optional.
-        discard_changes: Must be true if the open document has unsaved changes (they are lost).
+        file: Path relative to the data folder; the extension is optional for projects.
     """
-    store.open(file, discard_changes)
+    store.open(file)
+    return json.dumps(summary())
+
+
+@tool
+def list_tabs() -> str:
+    """Open documents (tabs): id, name, file, unsaved changes, which one is active.
+    All other tools work on the active tab."""
+    return json.dumps({"tabs": store.list_tabs()})
+
+
+@tool
+def switch_tab(tab: str) -> str:
+    """Make another open document (tab id from list_tabs) the active one."""
+    store.activate(tab)
+    return json.dumps(summary())
+
+
+@tool
+def close_document(tab: str = "", discard_changes: bool = False) -> str:
+    """Close a tab (default: the active one). Refuses if it has unsaved changes unless
+    discard_changes=true — ask the user before discarding their work."""
+    store.close(tab or None, discard_changes)
     return json.dumps(summary())
 
 
 @tool
 def save_document(file: str = "") -> str:
-    """Save the document. Without `file` it saves to its current file; with `file` it saves
-    under that name (Save As; overwrites). Files are SVG with mm units and Inkscape layers.
+    """Save the project (.svgcnc: layers, entities, 3D placements, parameters, material,
+    reference image). Without `file` it saves to its current file; with `file` it saves under
+    that name (Save As; overwrites). Use export_svg / export_cnc for SVG and DXF.
 
     Args:
-        file: Optional path relative to the data folder, e.g. "desk/v2".
+        file: Optional path relative to the data folder, e.g. "desk/v2" → desk/v2.svgcnc.
     """
     return json.dumps({"saved": store.save(file or None)})
 
@@ -128,14 +163,80 @@ def set_canvas_size(width: float, height: float) -> str:
 
 
 @tool
-def export_cnc(file: str = "") -> str:
-    """Write a CNC-ready SVG (mm units; only layers that are visible AND marked for export,
-    so NOTES is left out) to data/exports/. Returns the path.
+def export_cnc(file: str = "", format: str = "svg") -> str:
+    """Write a CNC-ready file to data/exports/ (mm units; only layers that are visible AND
+    marked for export, so NOTES is left out). Returns the path.
 
     Args:
         file: Optional file name; defaults to "<document>-cnc".
+        format: "svg" or "dxf" (DXF R2010: closed polylines with true arcs, circles, one DXF
+                layer per document layer).
     """
-    return json.dumps({"exported": store.export_cnc(file or None)})
+    if format not in ("svg", "dxf"):
+        raise DocError("format must be 'svg' or 'dxf'")
+    return json.dumps({"exported": store.export_cnc(file or None, format)})
+
+
+@tool
+def export_svg(file: str = "") -> str:
+    """Write the whole document as SVG (all layers, mm units, entities kept as metadata) to
+    data/exports/ — for Inkscape or other software. Returns the path."""
+    return json.dumps({"exported": store.export_svg(file or None)})
+
+
+@tool
+def set_material(name: str = "", type: str = "", thickness: float = 0, color: str = "",
+                 sheet_width: float = 0, sheet_height: float = 0, tool_diameter: float = 0,
+                 notes: str | None = None) -> str:
+    """Material & stock for the project. Only given fields change.
+
+    Args:
+        name: e.g. "Birch plywood", "EVA foam", "Acrylic", "Aluminium 5754".
+        type: plywood | wood | board | plastic | metal | foam | other.
+        thickness: mm — default part thickness (3D preview, exports).
+        color: #rrggbb used by the 3D preview.
+        sheet_width / sheet_height: stock sheet size, mm.
+        tool_diameter: end mill diameter, mm.
+    """
+    m = {k: v for k, v in (("name", name), ("type", type), ("thickness", thickness), ("color", color),
+                           ("sheet_width", sheet_width), ("sheet_height", sheet_height),
+                           ("tool_diameter", tool_diameter)) if v}
+    if notes is not None:
+        m["notes"] = notes
+    store.apply([{"op": "set_material", "material": m}])
+    return json.dumps({"material": store.doc.material})
+
+
+@tool
+def export_parts() -> str:
+    """One file per entity (top-level group) for nesting software: '<name>_x<qty>.svg' and
+    '.dxf', cut layers only, each moved to the origin. Written to data/exports/<doc>-parts/
+    plus a zip. Group each part first (group_elements) and set qty with update_group."""
+    with store.lock:
+        files = part_files(store.doc)
+        folder = store.resolve(f"exports/{store.display_name()}-parts", ext="")
+        folder.mkdir(parents=True, exist_ok=True)
+        for name, data in files:
+            (folder / name).write_bytes(data)
+        zpath = store.resolve(f"exports/{store.display_name()}-parts", ext=".zip")
+        zpath.write_bytes(parts_zip(store.doc))
+    return json.dumps({"folder": store.rel(folder), "zip": store.rel(zpath), "files": [n for n, _ in files]})
+
+
+@tool
+def import_dxf(file: str, new_tab: bool = True) -> str:
+    """Import a DXF from the data folder (converted to mm, layers and colours kept, Y flipped).
+    By default it opens as a new unsaved tab; new_tab=false adds it to the active document.
+
+    Args:
+        file: Path relative to the data folder, e.g. "desk/For CNC.dxf".
+    """
+    path = store.resolve(file, ext=".dxf" if not file.lower().endswith(".dxf") else "")
+    if not path.is_file():
+        raise DocError(f"'{file}' not found in the data folder")
+    svg = dxf_to_svg(path.read_bytes())
+    n = store.import_svg(svg, new_tab=new_tab, name=path.stem)
+    return json.dumps({"imported": n, **summary()})
 
 
 @tool
@@ -163,7 +264,7 @@ def list_elements(layer: str = "") -> str:
     d = store.doc
     els = [e for e in d.elements if not layer or e.layer == layer]
     return json.dumps({"width_mm": d.width, "height_mm": d.height,
-                       "elements": [{"id": e.id, "tag": e.tag, "layer": e.layer, "attrs": e.attrs,
+                       "elements": [{"id": e.id, "tag": e.tag, "layer": e.layer, "group": e.group, "attrs": e.attrs,
                                      **({"text": e.text} if e.tag == "text" else {})} for e in els]})
 
 
@@ -238,6 +339,235 @@ def get_svg() -> str:
     return store.doc.to_svg("file")
 
 
+# ── MCP: entities (groups) ─────────────────────────────────
+
+@tool
+def list_groups() -> str:
+    """Entities (groups): id, name, parent group, quantity, 3D assembly placement, and the
+    element ids inside (at any depth). Plus the document's 3D parameters (sliders)."""
+    d = store.doc
+    return json.dumps({"groups": [{**g.__dict__, "elements": d.descendants(g.id)} for g in d.groups],
+                       "params": d.params})
+
+
+@tool
+def group_elements(items: str, name: str = "") -> str:
+    """Group elements and/or groups into a named entity (e.g. one part = outline + holes on
+    different layers). Items must share the same parent group. Returns the new group id.
+
+    Args:
+        items: Comma-separated element/group ids, e.g. "el-1,el-2,g-3".
+        name: Entity name, e.g. "Lower frame A".
+    """
+    [gid] = store.apply([{"op": "group", "items": ids_arg(items), "name": name or None}])
+    return json.dumps({"group": gid})
+
+
+@tool
+def ungroup(group_id: str) -> str:
+    """Dissolve a group; its children move up one level."""
+    store.apply([{"op": "ungroup", "id": group_id}])
+    return json.dumps({"ungrouped": group_id})
+
+
+@tool
+def update_group(group_id: str, name: str = "", qty: int = 0, assembly: str = "") -> str:
+    """Rename an entity, set how many to cut (qty), or set its 3D placement for the preview.
+
+    Args:
+        group_id: e.g. "g-2".
+        name: New name.
+        qty: Quantity to cut (≥ 1), used in part exports.
+        assembly: JSON placing the part in 3D, or "null" to clear:
+            {"matrix": [a,b,c,d,e,f],   # maps document 2D (mm) → part-local 2D profile coords
+             "thickness": 18, "position": [x,y,z], "rotation": [rx,ry,rz],   # degrees, applied X,Y,Z
+             "color": "#e3c592", "move": {"param": "lift", "axis": [0,1,0]}}
+            World: X = width, Y = up, Z toward the viewer. The profile is extruded along +Z.
+    """
+    op = {"op": "update_group", "id": group_id, "name": name or None, "qty": qty or None}
+    if assembly:
+        op["assembly"] = parse_json(assembly, "assembly")
+    store.apply([op])
+    return list_groups()
+
+
+@tool
+def set_params(params: str) -> str:
+    """Set the document's 3D preview parameters (sliders), e.g.
+    '[{"name":"lift","label":"Desk height","min":0,"max":450,"step":50,"display_offset":720,"unit":"mm"}]'.
+    Groups whose assembly has "move": {"param": "lift", "axis": [0,1,0]} slide with it."""
+    store.apply([{"op": "set_params", "params": parse_json(params, "params")}])
+    return json.dumps({"params": store.doc.params})
+
+
+# ── MCP: selection, editing helpers, measuring ─────────────
+
+@tool
+def get_selection() -> str:
+    """What the user currently has selected in the editor (element ids, the entities they
+    belong to, and the bounding box in mm). Use it for requests like "make this part wider"."""
+    d, sel = store.doc, list(store.tab.selection)
+    els = [d.element(i) for i in sel if any(e.id == i for e in d.elements)]
+    groups = sorted({g for e in els for g in d.ancestors(e.group)} if els else set())
+    b = bbox(els) if els else None
+    return json.dumps({"elements": [e.id for e in els], "entities": [{"id": g, "name": d.group_by_id(g).name} for g in groups],
+                       "bounds_mm": {"x": b[0], "y": b[1], "width": b[2] - b[0], "height": b[3] - b[1]} if b else None})
+
+
+@tool
+def set_selection(items: str) -> str:
+    """Select (highlight) elements and/or entities in the user's editor, e.g. to show what you
+    changed. Comma-separated ids ("el-3,g-2"); empty string clears."""
+    sel = store.set_selection(ids_arg(items))
+    return json.dumps({"selected": len(sel)})
+
+
+@tool
+def measure(items: str) -> str:
+    """Bounding boxes (mm) of elements/entities: x, y, width, height, centre — and of all of
+    them together. Comma-separated ids ("g-1,el-7")."""
+    d = store.doc
+    out, all_els = [], []
+    for i in ids_arg(items):
+        els = [d.element(e) for e in (d.descendants(i) if i.startswith("g-") else [i])]
+        all_els += els
+        b = bbox(els)
+        out.append({"id": i, **_box(b)})
+    return json.dumps({"items": out, "total": _box(bbox(all_els)) if all_els else None})
+
+
+def _box(b):
+    if not b:
+        return {"empty": True}
+    x0, y0, x1, y1 = b
+    return {"x": round(x0, 3), "y": round(y0, 3), "width": round(x1 - x0, 3), "height": round(y1 - y0, 3),
+            "cx": round((x0 + x1) / 2, 3), "cy": round((y0 + y1) / 2, 3)}
+
+
+@tool
+def move_elements(items: str, dx: float, dy: float) -> str:
+    """Move elements/entities by (dx, dy) mm, as one undo step. Comma-separated ids."""
+    return _transform(items, f"translate({dx}, {dy})", "Move")
+
+
+@tool
+def transform_elements(items: str, transform: str) -> str:
+    """Apply an SVG transform to elements/entities (prepended to their own transform), one undo
+    step. Examples: "rotate(90 500 300)" (degrees about a point), "scale(-1 1) translate(-1000 0)"
+    (mirror), "translate(10 0)". Comma-separated ids."""
+    parse_transform(transform)   # validates
+    return _transform(items, transform, "Transform")
+
+
+def _transform(items, t, label):
+    d = store.doc
+    ids = []
+    for i in ids_arg(items):
+        ids += d.descendants(i) if i.startswith("g-") else [d.element(i).id]
+    ops = [{"op": "update_element", "id": i,
+            "attrs": {"transform": " ".join(x for x in (t, d.element(i).attrs.get("transform")) if x)}} for i in ids]
+    store.apply(ops, label=label)
+    return json.dumps({"changed": len(ids)})
+
+
+@tool
+def duplicate(items: str, dx: float = 10, dy: float = 10, name: str = "") -> str:
+    """Copy elements/entities, offset by (dx, dy) mm. Each copied entity becomes a new entity
+    (one level). Returns the new ids."""
+    d = store.doc
+    plan, ops = [], []
+    for i in ids_arg(items):
+        src = d.descendants(i) if i.startswith("g-") else [d.element(i).id]
+        idx = []
+        for eid in src:
+            e = d.element(eid)
+            t = " ".join(x for x in (f"translate({dx}, {dy})", e.attrs.get("transform")) if x)
+            idx.append(len(ops))
+            ops.append({"op": "add_element", "tag": e.tag, "layer": e.layer, "text": e.text,
+                        "attrs": {**e.attrs, "transform": t}})
+        plan.append((i, idx))
+    new = store.apply(ops, label="Duplicate")
+    gops = [{"op": "group", "items": [new[k] for k in idx], "name": name or f"{d.group_by_id(i).name} copy"}
+            for i, idx in plan if i.startswith("g-") and idx]
+    groups = store.apply(gops, label="Duplicate") if gops else []
+    return json.dumps({"elements": new, "entities": groups})
+
+
+@tool
+def reorder(items: str, where: str = "front") -> str:
+    """Bring elements/entities to the front or send them to the back of their layer
+    (where = "front" | "back")."""
+    d = store.doc
+    ids = [x for i in ids_arg(items) for x in (d.descendants(i) if i.startswith("g-") else [i])]
+    store.apply([{"op": "reorder_element", "id": i, "where": where} for i in (ids if where == "front" else ids[::-1])])
+    return json.dumps({"reordered": len(ids)})
+
+
+@tool
+def add_dimension(x1: float, y1: float, x2: float, y2: float, offset: float = 0, label: str = "") -> str:
+    """Draw a dimension (line, end ticks, length text) on the NOTES layer, grouped as one
+    entity. Coordinates in mm; offset shifts the line sideways (e.g. 15 to sit beside an edge).
+    label overrides the text (default: the length in mm)."""
+    import math
+    L = math.hypot(x2 - x1, y2 - y1)
+    if L == 0:
+        raise DocError("The two points are the same")
+    ux, uy = (x2 - x1) / L, (y2 - y1) / L
+    nx, ny = -uy, ux
+    ax, ay, bx, by = x1 + nx * offset, y1 + ny * offset, x2 + nx * offset, y2 + ny * offset
+    size = max(4, min(20, L / 12))
+    ang = math.degrees(math.atan2(uy, ux))
+    ang = ang - 180 if ang > 90 else ang + 180 if ang < -90 else ang
+    mx, my = (ax + bx) / 2, (ay + by) / 2
+    r = lambda v: round(v, 3)
+    layer = "NOTES" if store.doc.has_layer("NOTES") else store.doc.layers[0].name
+    ops = [{"op": "add_element", "tag": "line", "layer": layer, "attrs": {"x1": r(ax), "y1": r(ay), "x2": r(bx), "y2": r(by)}}]
+    for px, py in ((ax, ay), (bx, by)):
+        ops.append({"op": "add_element", "tag": "line", "layer": layer,
+                    "attrs": {"x1": r(px - nx * 4), "y1": r(py - ny * 4), "x2": r(px + nx * 4), "y2": r(py + ny * 4)}})
+    if offset:
+        for (px, py), (qx, qy) in (((x1, y1), (ax, ay)), ((x2, y2), (bx, by))):
+            ops.append({"op": "add_element", "tag": "line", "layer": layer, "attrs": {"x1": r(px), "y1": r(py), "x2": r(qx), "y2": r(qy)}})
+    ops.append({"op": "add_element", "tag": "text", "layer": layer, "text": label or f"{round(L, 2):g}",
+                "attrs": {"x": r(mx - nx * size * 0.6), "y": r(my - ny * size * 0.6), "font-size": r(size),
+                          "font-family": "sans-serif", "text-anchor": "middle",
+                          **({"transform": f"rotate({r(ang)} {r(mx)} {r(my)})"} if abs(ang) > 1e-6 else {})}})
+    ids = store.apply(ops, label="Add dimension")
+    [g] = store.apply([{"op": "group", "items": ids, "name": f"Dimension {round(L, 2):g}"}])
+    return json.dumps({"entity": g, "length": round(L, 3)})
+
+
+@tool
+def clear_document() -> str:
+    """Remove every element and entity from the active document (one undo step — undo restores).
+    Ask the user first."""
+    n = store.apply([{"op": "clear"}], label="Clear all")[0]
+    return json.dumps({"removed": n})
+
+
+@tool
+def revert_document() -> str:
+    """Reload the active document from its saved file, dropping unsaved changes (undoable).
+    Ask the user first."""
+    store.revert()
+    return json.dumps(summary())
+
+
+@tool
+def list_files(folder: str = "") -> str:
+    """All files in a data-folder subfolder (SVG, DXF, images, …): use it to find a DXF to
+    import or an image for set_background_image. folder is relative, e.g. "desk"."""
+    base = store.data_dir if not folder else store.resolve(folder, ext="")
+    if not base.is_dir():
+        raise DocError(f"Folder '{folder}' not found")
+    out = []
+    for p in sorted(base.rglob("*")):
+        rel = p.relative_to(store.data_dir)
+        if p.is_file() and not any(x.startswith(".") for x in rel.parts):
+            out.append({"file": rel.as_posix(), "size": p.stat().st_size})
+    return json.dumps({"files": out[:500], "truncated": len(out) > 500})
+
+
 # ── MCP: layers ────────────────────────────────────────────
 
 @tool
@@ -252,7 +582,7 @@ def list_layers() -> str:
 
 @tool
 def add_layer(name: str, color: str = "#000000", line_style: str = "solid", export: bool = True,
-              description: str = "") -> str:
+              description: str = "", depth: float = 0) -> str:
     """Create a layer.
 
     Args:
@@ -261,16 +591,18 @@ def add_layer(name: str, color: str = "#000000", line_style: str = "solid", expo
         line_style: solid, dashed, dotted, or a dasharray like "4 2".
         export: Include in CNC export (false for reference/notes layers).
         description: What the layer is for, e.g. "Pocket 6 mm deep".
+        depth: Partial-depth cut from the top face in mm (pockets); 0 = through-cut.
     """
     store.apply([{"op": "add_layer", "name": name, "color": color, "line_style": line_style,
-                  "export": export, "description": description}])
+                  "export": export, "description": description, "depth": depth or None}])
     return list_layers()
 
 
 @tool
 def update_layer(name: str, new_name: str = "", color: str = "", line_style: str = "",
                  visible: bool | None = None, locked: bool | None = None,
-                 export: bool | None = None, description: str | None = None) -> str:
+                 export: bool | None = None, description: str | None = None,
+                 depth: float | None = None) -> str:
     """Rename a layer or change its colour, line style, visibility, lock, export flag or
     description. Only the fields you pass change.
 
@@ -283,15 +615,17 @@ def update_layer(name: str, new_name: str = "", color: str = "", line_style: str
         locked: Locked layers can't be selected in the editor.
         export: Include in CNC export.
         description: What the layer is for.
+        depth: Partial-depth cut in mm from the top face (pocket); 0 makes it a through-cut.
     """
     only_visibility = visible is not None and not (new_name or color or line_style) \
-        and locked is None and export is None and description is None
+        and locked is None and export is None and description is None and depth is None
     if only_visibility:
         store.apply([{"op": "set_layer_visibility", "name": name, "visible": visible}])
     else:
         store.apply([{"op": "update_layer", "name": name, "new_name": new_name or None,
                       "color": color or None, "line_style": line_style or None, "visible": visible,
-                      "locked": locked, "export": export, "description": description}])
+                      "locked": locked, "export": export, "description": description,
+                      **({"depth": depth or None} if depth is not None else {})}])
     return list_layers()
 
 
@@ -314,10 +648,19 @@ def move_layer(name: str, index: int) -> str:
 # ── MCP: preview & reference image ─────────────────────────
 
 @tool
-def take_screenshot():
-    """Image of the whole document as rendered by the editor (the editor page must be open)."""
+def take_screenshot(view: str = "2d"):
+    """Image of the active document as rendered by the editor (the editor page must be open).
+
+    Args:
+        view: "2d" = the whole drawing; "3d" = the assembled 3D preview (entities with a 3D
+              placement); "3d-exploded" = the assembly view with parts pulled apart. 3D views
+              render in the background without changing what the user sees.
+    """
+    if view not in ("2d", "3d", "3d-exploded"):
+        raise DocError("view must be '2d', '3d' or '3d-exploded'")
     with store.changed:
         store.screenshot_png = None
+        store.screenshot_view = view
         store.screenshot_requested = True
         store.changed.notify_all()
     deadline = time.time() + 15
@@ -408,12 +751,35 @@ def action(fn):
 
 post_undo = action(lambda b: store.undo())
 post_redo = action(lambda b: store.redo())
-post_new = action(lambda b: store.new(b.get("width", 800), b.get("height", 600), b.get("discard", False)))
-post_open = action(lambda b: store.open(b["file"], b.get("discard", False)))
+post_new = action(lambda b: store.new(b.get("width", 800), b.get("height", 600)))
+post_open = action(lambda b: store.open(b["file"]))
+post_close = action(lambda b: store.close(b.get("tab"), b.get("discard", False)))
+post_activate = action(lambda b: store.activate(b["tab"]))
+post_revert = action(lambda b: store.revert())
 post_save = action(lambda b: store.save(b.get("file") or None))
+post_saved_local = action(lambda b: store.mark_saved_elsewhere(b["name"]))
 post_delete = action(lambda b: store.delete_file(b["file"]))
-post_import = action(lambda b: store.import_svg(b["svg"], b.get("layer"), b.get("file"),
-                                                b.get("replace", False), b.get("discard", False)))
+post_mkdir = action(lambda b: store.make_folder(b["folder"]))
+
+
+def _import(b):
+    if b.get("project"):     # a .svgcnc opened from the user's computer
+        from document import from_native
+        doc = from_native(b["project"])
+        with store.lock:
+            tab = store._add_tab(doc)
+            tab.suggested_name = b.get("name")
+            store._bump()
+        return len(doc.elements)
+    svg = b.get("svg")
+    if b.get("dxf"):
+        svg = dxf_to_svg(base64.b64decode(b["dxf"]))
+    if not svg:
+        raise DocError("Nothing to import")
+    return store.import_svg(svg, b.get("layer"), b.get("new_tab", False), b.get("name"))
+
+
+post_import = action(_import)
 
 
 @api
@@ -424,17 +790,41 @@ async def get_background(request):
 
 
 @api
+async def post_selection(request):
+    body = await request.json()
+    store.report_selection(body.get("ids") or [], body.get("tab"))
+    return web.json_response({"ok": True})
+
+
+@api
 async def get_files(request):
     return web.json_response({"files": store.list_files(), "open": store.file})
+
+
+@api
+async def get_browse(request):
+    return web.json_response(store.browse(request.query.get("folder", "")))
 
 
 @api
 async def get_export(request):
     kind = request.match_info["kind"]
     name = store.display_name()
-    body, fname = (store.doc.to_svg("cnc"), f"{name}-cnc.svg") if kind == "cnc" \
-        else (store.doc.to_svg("file"), f"{name}.svg")
-    return web.Response(text=body, content_type="image/svg+xml",
+    with store.lock:
+        if kind == "cnc":
+            body, fname, ctype = store.doc.to_svg("cnc").encode(), f"{name}-cnc.svg", "image/svg+xml"
+        elif kind == "cnc-dxf":
+            body, fname, ctype = cnc_dxf(store.doc), f"{name}-cnc.dxf", "application/dxf"
+        elif kind == "parts":
+            body, fname, ctype = parts_zip(store.doc), f"{name}-parts.zip", "application/zip"
+        elif kind == "file":
+            body, fname, ctype = store.doc.to_svg("file").encode(), f"{name}.svg", "image/svg+xml"
+        elif kind == "project":
+            from document import to_native
+            body, fname, ctype = to_native(store.doc).encode(), f"{name}.svgcnc", "application/json"
+        else:
+            raise DocError(f"Unknown export '{kind}'")
+    return web.Response(body=body, content_type=ctype,
                         headers={"Content-Disposition": f'attachment; filename="{fname}"'})
 
 
@@ -469,6 +859,13 @@ def run_http_server():
     r.add_post("/api/redo", post_redo)
     r.add_post("/api/file/new", post_new)
     r.add_post("/api/file/open", post_open)
+    r.add_post("/api/file/close", post_close)
+    r.add_post("/api/file/activate", post_activate)
+    r.add_post("/api/file/revert", post_revert)
+    r.add_post("/api/file/saved-local", post_saved_local)
+    r.add_post("/api/file/mkdir", post_mkdir)
+    r.add_get("/api/browse", get_browse)
+    r.add_post("/api/selection", post_selection)
     r.add_post("/api/file/save", post_save)
     r.add_post("/api/file/delete", post_delete)
     r.add_post("/api/file/import", post_import)

@@ -5,6 +5,12 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>SVG CNC Editor</title>
 <link rel="stylesheet" href="css/app.css">
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.160.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.160.0/examples/jsm/"
+} }
+</script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect x='2' y='2' width='20' height='20' rx='4' fill='%23262626'/%3E%3Cpath d='M6 17L17 6M6 6h5M13 17h5' stroke='%23e74c3c' stroke-width='2' stroke-linecap='round'/%3E%3C/svg%3E">
 </head>
 <body>
@@ -20,6 +26,9 @@
 <!-- Action toolbar -->
 <div class="toolbar" id="toolbar"></div>
 
+<!-- Document tabs -->
+<div class="tabbar" id="tabbar"></div>
+
 <main>
   <!-- Tool palette -->
   <aside class="tools" id="tools"></aside>
@@ -29,6 +38,7 @@
     <div class="ruler-corner" id="ruler-corner" title="Toggle ruler units">cm</div>
     <div class="ruler ruler-h"><canvas id="ruler-h"></canvas></div>
     <div class="ruler ruler-v"><canvas id="ruler-v"></canvas></div>
+    <div class="breadcrumb" id="breadcrumb" hidden></div>
     <div class="canvas-wrap" id="canvas-wrap">
       <svg id="canvas" xmlns="http://www.w3.org/2000/svg">
         <g id="background"></g>
@@ -37,6 +47,12 @@
         <g id="overlay"></g>
       </svg>
     </div>
+  </section>
+
+  <!-- 3D preview (replaces the canvas area while a 3D tab is active) -->
+  <section class="view3d" id="view3d" hidden>
+    <div class="view3d-canvas" id="view3d-canvas"></div>
+    <div class="view3d-panel" id="view3d-panel"></div>
   </section>
 
   <!-- Right panels -->
@@ -48,7 +64,17 @@
       </header>
       <div id="layers"></div>
     </section>
-    <section class="panel grow" id="inspector"></section>
+    <section class="panel" id="entities-panel">
+      <header class="panel-head">
+        <h2>Entities</h2>
+        <button class="icon-btn" id="entity-add" title="Group selection (⌘G)"></button>
+      </header>
+      <div id="entities"></div>
+    </section>
+    <section class="panel grow" id="inspector-panel">
+      <header class="panel-head"><h2>Inspector</h2></header>
+      <div id="inspector"></div>
+    </section>
   </aside>
 </main>
 

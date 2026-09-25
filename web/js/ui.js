@@ -37,6 +37,12 @@ export const icons = {
   down: P('<path d="M12 5v14M6 13l6 6 6-6"/>'),
   front: P('<rect x="9" y="9" width="11" height="11" rx="1" fill="currentColor" fill-opacity=".25"/><path d="M15 9V5a1 1 0 00-1-1H5a1 1 0 00-1 1v9a1 1 0 001 1h4"/>'),
   back: P('<rect x="4" y="4" width="11" height="11" rx="1" fill="currentColor" fill-opacity=".25"/><path d="M9 15v4a1 1 0 001 1h9a1 1 0 001-1v-9a1 1 0 00-1-1h-4"/>'),
+  group: P('<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/><path d="M2 2h20v20H2z" stroke-dasharray="2 2"/>'),
+  ungroup: P('<rect x="3" y="3" width="8" height="8" rx="1"/><rect x="13" y="13" width="8" height="8" rx="1"/>'),
+  dims: P('<path d="M3 7h18M3 4v6M21 4v6M7 21V11M4 11h6M4 21h6"/>'),
+  cube: P('<path d="M12 2l9 5v10l-9 5-9-5V7z"/><path d="M12 12l9-5M12 12v10M12 12L3 7"/>'),
+  side: P('<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M15 4v16"/>'),
+  measure: P('<path d="M3 17L17 3l4 4L7 21z"/><path d="M7 13l2 2M10 10l2 2M13 7l2 2"/>'),
 };
 
 export function esc(s) {
