@@ -16,6 +16,17 @@ let parts = [];              // {mesh, base: Vector3, move}
 let built = null;            // doc version the scene was built from
 const values = {};           // current param values
 let explode = 0;             // 0 = assembled … 1 = fully exploded (assembly view)
+let navMode = 'rotate';      // left-drag: 'rotate' or 'move' (pan)
+
+function setNavMode(mode) {
+  navMode = mode;
+  if (!controls) return;
+  const { ROTATE, PAN, DOLLY } = THREE.MOUSE;
+  controls.mouseButtons = mode === 'move'
+    ? { LEFT: PAN, MIDDLE: DOLLY, RIGHT: ROTATE }
+    : { LEFT: ROTATE, MIDDLE: DOLLY, RIGHT: PAN };
+  panel.querySelectorAll('[data-nav]').forEach(b => b.classList.toggle('on', b.dataset.nav === mode));
+}
 
 async function loadThree() {
   if (THREE) return true;
@@ -42,6 +53,11 @@ function setup() {
   camera = new THREE.PerspectiveCamera(40, 1, 5, 50000);
   controls = new OrbitControls(camera, renderer.domElement);
   controls.enableDamping = true;
+  controls.screenSpacePanning = true;       // pan moves the view up/down/sideways, like a CAD viewer
+  controls.zoomToCursor = true;             // scroll zooms toward the pointer
+  controls.listenToKeyEvents(window);       // arrow keys pan
+  controls.keyPanSpeed = 25;
+  setNavMode(navMode);
   scene.add(new THREE.HemisphereLight('#ffffff', '#b9b2a4', 1.1));
   const sun = new THREE.DirectionalLight('#ffffff', 1.4);
   sun.position.set(1500, 2500, 2000);
@@ -270,10 +286,13 @@ function renderPanel(mode, count) {
       <input type="range" min="${p.min ?? 0}" max="${p.max ?? 100}" step="${p.step ?? 1}" value="${values[p.name]}" data-param="${esc(p.name)}"></div>`).join('')}
     ${count > 1 ? `<div class="param"><label><span>Assembly view (explode)</span><b data-val="__explode">${Math.round(explode * 100)}%</b></label>
       <input type="range" min="0" max="1" step="0.01" value="${explode}" data-explode></div>` : ''}
-    <div class="row"><button class="btn" data-fit>Reset view</button></div>
+    <div class="row nav-row"><span class="seg"><button class="btn ${navMode === 'rotate' ? 'on' : ''}" data-nav="rotate" title="Left-drag rotates">Rotate</button><button
+        class="btn ${navMode === 'move' ? 'on' : ''}" data-nav="move" title="Left-drag moves (pans) the view">Move</button></span>
+      <button class="btn" data-fit>Reset view</button></div>
     ${mode === 'flat' ? `<p class="note">No part has a 3D position yet, so everything is shown flat, as on the sheet, at the material thickness.
       To assemble: group each part (select its shapes → ⌘G), then “Place in 3D…” in the Inspector — or ask Claude to place them.</p>` : ''}
-    <p class="note">Drag to orbit · right-drag to pan · scroll to zoom</p>`;
+    <p class="note">${navMode === 'move' ? 'Drag: move' : 'Drag: rotate'} · Shift+drag or right-drag: ${navMode === 'move' ? 'rotate' : 'move'} · scroll: zoom to pointer ·
+      arrows: move · double-click a part: centre on it</p>`;
 }
 
 const fmtParam = (p, v) => `${+(v + (p.display_offset || 0)).toFixed(2)}${p.unit ? ' ' + p.unit : ''}`;
@@ -293,6 +312,8 @@ panel.addEventListener('input', (e) => {
 });
 panel.addEventListener('click', (e) => {
   if (e.target.closest('[data-fit]')) fitView();
+  const nav = e.target.closest('[data-nav]');
+  if (nav) { setNavMode(nav.dataset.nav); renderPanelNote(); }
 
 });
 
@@ -392,6 +413,25 @@ function highlightSelection() {
   }
 }
 on('selection', () => { if (parts.length) highlightSelection(); });
+
+function renderPanelNote() {
+  const note = [...panel.querySelectorAll('.note')].pop();
+  if (note) note.innerHTML = `${navMode === 'move' ? 'Drag: move' : 'Drag: rotate'} · Shift+drag or right-drag: ${navMode === 'move' ? 'rotate' : 'move'} · scroll: zoom to pointer · arrows: move · double-click a part: centre on it`;
+}
+
+// Double-click a part: orbit around it (camera keeps its direction and distance)
+host.addEventListener('dblclick', (e) => {
+  if (!renderer) return;
+  const r = renderer.domElement.getBoundingClientRect();
+  const ray = new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(((e.clientX - r.left) / r.width) * 2 - 1, -((e.clientY - r.top) / r.height) * 2 + 1), camera);
+  const hit = ray.intersectObjects(parts.map(p => p.mesh), false)[0];
+  if (!hit) return;
+  const c = new THREE.Box3().setFromObject(hit.object).getCenter(new THREE.Vector3());
+  camera.position.add(c.clone().sub(controls.target));
+  controls.target.copy(c);
+  controls.update();
+});
 
 // Click (not drag) on a part selects its entity
 let downAt = null;

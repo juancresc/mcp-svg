@@ -448,3 +448,10 @@ dialog.wide { min-width: 560px; }
 .tb-material { border: 1px solid rgba(255,255,255,.18); margin-right: 6px; max-width: 240px; }
 .tb-material span:last-child { overflow: hidden; text-overflow: ellipsis; }
 .mat-dot { width: 12px; height: 12px; border-radius: 3px; border: 1px solid rgba(255,255,255,.4); flex-shrink: 0; }
+
+/* 3D navigation mode */
+.view3d-panel .seg { display: inline-flex; }
+.view3d-panel .seg .btn { border-radius: 0; }
+.view3d-panel .seg .btn:first-child { border-radius: 5px 0 0 5px; }
+.view3d-panel .seg .btn:last-child { border-radius: 0 5px 5px 0; border-left: 0; }
+.view3d-panel .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }

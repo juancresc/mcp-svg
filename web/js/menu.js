@@ -285,6 +285,7 @@ document.addEventListener('keydown', (e) => {
   if (e.key === 'Delete' || e.key === 'Backspace') { e.preventDefault(); return actions.deleteSelection(); }
   const arrows = { ArrowLeft: [-1, 0], ArrowRight: [1, 0], ArrowUp: [0, -1], ArrowDown: [0, 1] };
   if (arrows[e.key]) {
+    if (app.view === '3d') return;          // arrows move the 3D view there
     e.preventDefault();
     const step = (e.shiftKey ? 10 : 1) * (app.snap ? app.grid : 1);
     return actions.nudge(arrows[e.key][0] * step, arrows[e.key][1] * step);
