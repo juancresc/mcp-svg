@@ -114,6 +114,9 @@ header h1 {
 
 .unit-toggle:hover { background: rgba(255,255,255,.2); }
 
+.zoom-group { display: flex; gap: 2px; }
+.zoom-group #zoom-label { min-width: 48px; }
+
 .actions { display: flex; gap: 3px; margin-left: auto; }
 
 /* ─── Main ─── */
@@ -157,17 +160,21 @@ main { display: flex; flex: 1; overflow: hidden; }
 .canvas-wrap {
   overflow: auto;
   display: flex;
-  align-items: center;
-  justify-content: center;
   padding: 20px;
 }
 
+/* margin:auto centres when smaller than the view but stays fully scrollable when larger
+   (flex centering would push the top/left edges out of reach) */
 #canvas {
+  margin: auto;
   background: #fff;
   box-shadow: 0 2px 10px rgba(0,0,0,.12);
   cursor: crosshair;
   flex-shrink: 0;
 }
+
+/* Keep lines readable at any zoom (display only — not part of the exported SVG) */
+#canvas * { vector-effect: non-scaling-stroke; }
 
 #canvas.select-mode { cursor: default; }
 #canvas.select-mode line,
@@ -517,6 +524,12 @@ main { display: flex; flex: 1; overflow: hidden; }
   </div>
   <div class="sep"></div>
   <button class="unit-toggle" id="unit-toggle" title="Toggle ruler units">cm</button>
+  <div class="zoom-group">
+    <button class="unit-toggle" id="zoom-out" title="Zoom out (Ctrl/⌘ + scroll)">−</button>
+    <button class="unit-toggle" id="zoom-label" title="Reset to 100%">100%</button>
+    <button class="unit-toggle" id="zoom-in" title="Zoom in (Ctrl/⌘ + scroll)">+</button>
+    <button class="unit-toggle" id="zoom-fit" title="Fit drawing to window">Fit</button>
+  </div>
   <span class="cursor-pos" id="cursor-pos">—</span>
   <span class="mcp-indicator" id="mcp-indicator" style="display:none">
     <span class="mcp-dot" id="mcp-dot"></span>
@@ -524,7 +537,10 @@ main { display: flex; flex: 1; overflow: hidden; }
   </span>
   <div class="actions">
     <button id="btn-code">Code</button>
-    <button id="btn-export">Export</button>
+    <button id="btn-export" title="CNC export: SVG in mm, without NOTES">Export</button>
+    <button id="btn-export-png" title="PNG image of the visible layers">PNG</button>
+    <button id="btn-bg" title="Set background reference image">BG</button>
+    <input type="file" id="bg-file-input" accept="image/*" style="display:none">
     <button id="btn-clear">Clear</button>
   </div>
 </header>
@@ -560,8 +576,9 @@ main { display: flex; flex: 1; overflow: hidden; }
 // ─── Constants ───────────────────────────────────────
 
 const NS = 'http://www.w3.org/2000/svg';
-const PX_PER_CM = 37.7953;
-const PX_PER_IN = 96;
+// 1 SVG unit = 1 mm (see cncClone)
+const MM_PER_CM = 10;
+const MM_PER_IN = 25.4;
 const SHAPE_SEL = 'line, rect, circle, ellipse, text, path, polygon, polyline';
 
 const ATTRS = {
@@ -587,11 +604,16 @@ const LAYERS = [
 let _nextElId = 1;
 let mcpConnected = false;
 let mcpVersion = -1;
+let mcpInstance = null;
 let mcpSyncEnabled = false;
 let mcpPushPending = false;
+let bgVersion = 0;
+let bgElement = null;
+let bgOpacity = 0.3;
 
 const state = {
   tool: 'select',
+  zoom: 1,
   drawing: false,
   dragging: false,
   startX: 0,
@@ -664,10 +686,13 @@ function drawRulers(mouseX, mouseY) {
   const svgW = svgRect.width;
   const svgH = svgRect.height;
 
-  const pxPerUnit = state.unit === 'cm' ? PX_PER_CM : PX_PER_IN;
-  const majorEvery = state.unit === 'cm' ? 1 : 1;
-  const subdivisions = state.unit === 'cm' ? 5 : 4;
-  const unitLabel = state.unit;
+  const pxPerUnit = (state.unit === 'cm' ? MM_PER_CM : MM_PER_IN) * state.zoom;
+  // Label every `step` units so labels stay at least ~40px apart
+  const step = [1, 2, 5, 10, 20, 50, 100].find(n => pxPerUnit * n >= 40) || 100;
+  const pxPerMajor = pxPerUnit * step;
+  const subdivisions = [10, 5, 4, 2, 1].find(n => pxPerMajor / n >= 6) || 1;
+  const mx = mouseX == null ? null : mouseX * state.zoom;
+  const my = mouseY == null ? null : mouseY * state.zoom;
 
   // ─ Horizontal ruler ─
   const hW = canvasWrap.clientWidth;
@@ -682,7 +707,7 @@ function drawRulers(mouseX, mouseY) {
   hCtx.fillStyle = '#f8f8f8';
   hCtx.fillRect(0, 0, hW, hH);
 
-  drawRulerAxis(hCtx, 'h', hW, hH, offsetX, svgW, pxPerUnit, subdivisions, mouseX);
+  drawRulerAxis(hCtx, 'h', hW, hH, offsetX, pxPerMajor, step, subdivisions, mx);
 
   // ─ Vertical ruler ─
   const vW = 24;
@@ -697,10 +722,10 @@ function drawRulers(mouseX, mouseY) {
   vCtx.fillStyle = '#f8f8f8';
   vCtx.fillRect(0, 0, vW, vH);
 
-  drawRulerAxis(vCtx, 'v', vH, vW, offsetY, svgH, pxPerUnit, subdivisions, mouseY);
+  drawRulerAxis(vCtx, 'v', vH, vW, offsetY, pxPerMajor, step, subdivisions, my);
 }
 
-function drawRulerAxis(ctx, dir, length, thickness, offset, svgSize, pxPerUnit, subs, mousePos) {
+function drawRulerAxis(ctx, dir, length, thickness, offset, pxPerUnit, labelStep, subs, mousePos) {
   ctx.strokeStyle = '#ccc';
   ctx.fillStyle = '#888';
   ctx.font = '9px -apple-system, sans-serif';
@@ -733,7 +758,7 @@ function drawRulerAxis(ctx, dir, length, thickness, offset, svgSize, pxPerUnit, 
       ctx.stroke();
 
       if (isMajor && u >= 0) {
-        const label = String(u);
+        const label = String(u * labelStep);
         if (dir === 'h') {
           ctx.textAlign = 'left';
           ctx.textBaseline = 'top';
@@ -824,7 +849,7 @@ widthInput.addEventListener('input', () => {
 
 function pt(e) {
   const r = canvas.getBoundingClientRect();
-  return { x: e.clientX - r.left, y: e.clientY - r.top };
+  return { x: (e.clientX - r.left) / state.zoom, y: (e.clientY - r.top) / state.zoom };
 }
 
 // ─── Cursor Position ─────────────────────────────────
@@ -839,7 +864,7 @@ function handleMouseMove(e) {
   const p = pt(e);
   const px = Math.round(p.x);
   const py = Math.round(p.y);
-  cursorPos.textContent = `${px}, ${py} px`;
+  cursorPos.textContent = `${px}, ${py} mm`;
 
   drawRulers(p.x, p.y);
 
@@ -1167,8 +1192,26 @@ const EXAMPLES = [
 ];
 
 function showSnippetUI() {
-  propsHead.textContent = 'Add Element';
-  let html = `
+  let html = '';
+
+  // Background image controls
+  if (bgElement) {
+    propsHead.textContent = 'Background Image';
+    html += `
+    <div style="margin-bottom:12px; padding-bottom:12px; border-bottom:1px solid var(--border);">
+      <div class="prop-row">
+        <label>opacity</label>
+        <input type="range" id="bg-opacity-slider" min="0" max="1" step="0.05" value="${bgOpacity}" style="flex:1">
+        <span id="bg-opacity-val" style="width:30px;text-align:right;font-size:11px;">${bgOpacity.toFixed(2)}</span>
+      </div>
+      <button id="bg-remove-btn" style="width:100%;padding:5px;margin-top:6px;background:#e74c3c;color:#fff;border:none;border-radius:4px;cursor:pointer;font-size:11px;">Remove Background</button>
+    </div>
+    <h3 style="font-size:13px; font-weight:600; margin-bottom:8px;">Add Element</h3>`;
+  } else {
+    propsHead.textContent = 'Add Element';
+  }
+
+  html += `
     <p class="snippet-intro">Type SVG markup to add an element, or click an example below.</p>
     <textarea class="snippet-textarea" id="snippet-input" spellcheck="false" placeholder='<rect x="10" y="10" width="100" height="80" fill="#4a90d9"/>'></textarea>
     <button id="snippet-add">Add to Canvas</button>
@@ -1194,6 +1237,36 @@ function showSnippetUI() {
       document.getElementById('snippet-msg').textContent = '';
     });
   });
+
+  // Background controls
+  const bgSlider = document.getElementById('bg-opacity-slider');
+  if (bgSlider) {
+    bgSlider.addEventListener('input', () => {
+      bgOpacity = parseFloat(bgSlider.value);
+      document.getElementById('bg-opacity-val').textContent = bgOpacity.toFixed(2);
+      if (bgElement) bgElement.setAttribute('opacity', String(bgOpacity));
+      try { localStorage.setItem('svg-editor-bg-opacity', String(bgOpacity)); } catch (e) {}
+    });
+  }
+  const bgRemoveBtn = document.getElementById('bg-remove-btn');
+  if (bgRemoveBtn) {
+    bgRemoveBtn.addEventListener('click', async () => {
+      renderBackground(null, 0);
+      localStorage.removeItem('svg-editor-bg');
+      localStorage.removeItem('svg-editor-bg-opacity');
+      localStorage.removeItem('svg-editor-bg-version');
+      showSnippetUI();
+      if (mcpConnected) {
+        try {
+          await fetch(`${MCP_API}/api/background`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ image: null, opacity: 0.3 }),
+          });
+        } catch (err) {}
+      }
+    });
+  }
 }
 
 function insertSnippet() {
@@ -1390,12 +1463,31 @@ document.getElementById('btn-export').addEventListener('click', () => {
   URL.revokeObjectURL(a.href);
 });
 
+document.getElementById('btn-export-png').addEventListener('click', async () => {
+  const clone = cleanClone();
+  state.layers.filter(l => !l.visible).forEach(l => {
+    clone.querySelectorAll(`[data-layer="${l.name}"]`).forEach(el => el.remove());
+  });
+  const w = +clone.getAttribute('width'), h = +clone.getAttribute('height');
+  // 4 px/mm (~100 dpi), limited so the longest side stays under 16000 px
+  const scale = Math.min(4, 16000 / Math.max(w, h));
+  const c = await renderPng(clone, scale);
+  c.toBlob(blob => {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'drawing.png';
+    a.click();
+    URL.revokeObjectURL(a.href);
+  }, 'image/png');
+});
+
 // ─── Clear ───────────────────────────────────────────
 
 document.getElementById('btn-clear').addEventListener('click', () => {
   if (!canvas.querySelector(SHAPE_SEL)) return;
   canvas.innerHTML = '';
   canvas.appendChild(selBox);
+  if (bgElement) canvas.insertBefore(bgElement, canvas.firstChild);
   deselect();
   save();
 });
@@ -1406,6 +1498,7 @@ function save() {
   ensureIds();
   const clone = cleanClone();
   localStorage.setItem('svg-editor', clone.innerHTML);
+  localStorage.setItem('svg-editor-size', JSON.stringify({ w: canvas.getAttribute('width'), h: canvas.getAttribute('height') }));
   localStorage.setItem('svg-editor-layers', JSON.stringify(
     state.layers.map(l => ({ name: l.name, visible: l.visible }))
   ));
@@ -1415,6 +1508,10 @@ function save() {
 }
 
 function load() {
+  try {
+    const size = JSON.parse(localStorage.getItem('svg-editor-size'));
+    if (size && size.w && size.h) { canvas.setAttribute('width', size.w); canvas.setAttribute('height', size.h); }
+  } catch (_) {}
   const data = localStorage.getItem('svg-editor');
   if (data) {
     canvas.innerHTML = data;
@@ -1432,6 +1529,14 @@ function load() {
       });
     } catch (e) {}
   }
+
+  // Restore background image
+  const bgData = localStorage.getItem('svg-editor-bg');
+  if (bgData) {
+    bgOpacity = parseFloat(localStorage.getItem('svg-editor-bg-opacity')) || 0.3;
+    bgVersion = parseInt(localStorage.getItem('svg-editor-bg-version') || '0');
+    renderBackground(bgData, bgOpacity);
+  }
 }
 
 // ─── Helpers ─────────────────────────────────────────
@@ -1447,7 +1552,10 @@ function ga(el, attr) {
 function cleanClone() {
   const clone = canvas.cloneNode(true);
   clone.querySelector('#_sel')?.remove();
+  clone.querySelector('#_bg')?.remove();
   clone.querySelectorAll('[style]').forEach(el => el.removeAttribute('style'));
+  clone.removeAttribute('style');     // zoom display size
+  clone.removeAttribute('viewBox');   // zoom viewBox (cncClone re-adds its own)
   return clone;
 }
 
@@ -1493,6 +1601,86 @@ function ensureIds() {
 
 const MCP_API = window.location.protocol === 'file:' ? 'http://localhost:8765' : '';
 
+// ─── Background Image ────────────────────────────────
+
+function renderBackground(dataUri, opacity) {
+  if (!dataUri) {
+    if (bgElement) { bgElement.remove(); bgElement = null; }
+    return;
+  }
+  if (!bgElement) {
+    bgElement = document.createElementNS(NS, 'image');
+    bgElement.id = '_bg';
+    bgElement.setAttribute('pointer-events', 'none');
+  }
+  const w = canvas.getAttribute('width');
+  const h = canvas.getAttribute('height');
+  bgElement.setAttribute('x', '0');
+  bgElement.setAttribute('y', '0');
+  bgElement.setAttribute('width', w);
+  bgElement.setAttribute('height', h);
+  bgElement.setAttribute('href', dataUri);
+  bgElement.setAttribute('opacity', String(opacity));
+  bgElement.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+  // Ensure it's the first child (behind everything)
+  if (canvas.firstChild !== bgElement) {
+    canvas.insertBefore(bgElement, canvas.firstChild);
+  }
+}
+
+async function fetchBackground() {
+  try {
+    const resp = await fetch(`${MCP_API}/api/background`);
+    if (!resp.ok) return;
+    const data = await resp.json();
+    if (data.image) {
+      renderBackground(data.image, data.opacity);
+      try {
+        localStorage.setItem('svg-editor-bg', data.image);
+        localStorage.setItem('svg-editor-bg-opacity', String(data.opacity));
+        localStorage.setItem('svg-editor-bg-version', String(data.version));
+      } catch (e) { /* image too large for localStorage */ }
+    } else {
+      renderBackground(null, 0);
+      localStorage.removeItem('svg-editor-bg');
+      localStorage.removeItem('svg-editor-bg-opacity');
+      localStorage.removeItem('svg-editor-bg-version');
+    }
+    showSnippetUI();
+  } catch (e) {}
+}
+
+document.getElementById('btn-bg').addEventListener('click', () => {
+  document.getElementById('bg-file-input').click();
+});
+
+document.getElementById('bg-file-input').addEventListener('change', async (e) => {
+  const file = e.target.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onload = async () => {
+    const dataUri = reader.result;
+    bgOpacity = 0.3;
+    renderBackground(dataUri, bgOpacity);
+    showSnippetUI();
+    try {
+      localStorage.setItem('svg-editor-bg', dataUri);
+      localStorage.setItem('svg-editor-bg-opacity', String(bgOpacity));
+    } catch (e) {}
+    if (mcpConnected) {
+      try {
+        await fetch(`${MCP_API}/api/background`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ image: dataUri, opacity: bgOpacity }),
+        });
+      } catch (err) {}
+    }
+  };
+  reader.readAsDataURL(file);
+  e.target.value = '';
+});
+
 const mcpIndicator = document.getElementById('mcp-indicator');
 const mcpDot = document.getElementById('mcp-dot');
 const mcpLabel = document.getElementById('mcp-label');
@@ -1528,9 +1716,30 @@ async function pollMcp() {
       captureAndSendScreenshot();
     }
 
+    if (data.instance !== mcpInstance) {
+      // Server restarted (in-memory state and version counter reset):
+      // the browser holds the persisted drawing, so push it back.
+      pushToMcp();
+      return;
+    }
     if (data.version > mcpVersion) {
       mcpVersion = data.version;
       applyMcpState(data);
+    }
+
+    // Check for background image changes (separate version counter)
+    if (data.background_version !== undefined && data.background_version > bgVersion) {
+      bgVersion = data.background_version;
+      bgOpacity = data.background_opacity || 0.3;
+      if (data.has_background) {
+        fetchBackground();
+      } else {
+        renderBackground(null, 0);
+        localStorage.removeItem('svg-editor-bg');
+        localStorage.removeItem('svg-editor-bg-opacity');
+        localStorage.removeItem('svg-editor-bg-version');
+        showSnippetUI();
+      }
     }
   } catch (e) {
     mcpStatus('error');
@@ -1558,6 +1767,11 @@ function applyMcpState(data) {
   canvas.appendChild(selBox);
   selBox.style.display = 'none';
 
+  // Re-insert background image if it exists
+  if (bgElement) {
+    canvas.insertBefore(bgElement, canvas.firstChild);
+  }
+
   // Sync layer visibility from server
   if (data.layers && Array.isArray(data.layers)) {
     data.layers.forEach(serverLayer => {
@@ -1571,6 +1785,7 @@ function applyMcpState(data) {
   // Sync to localStorage
   const clone = cleanClone();
   localStorage.setItem('svg-editor', clone.innerHTML);
+  localStorage.setItem('svg-editor-size', JSON.stringify({ w: canvas.getAttribute('width'), h: canvas.getAttribute('height') }));
   updateCode();
   drawRulers(null, null);
 }
@@ -1590,6 +1805,7 @@ async function pushToMcp() {
     if (resp.ok) {
       const data = await resp.json();
       mcpVersion = data.version;
+      mcpInstance = data.instance;
       mcpStatus('connected');
     }
   } catch (e) {
@@ -1599,39 +1815,101 @@ async function pushToMcp() {
   }
 }
 
-async function captureAndSendScreenshot() {
-  try {
-    const clone = cleanClone();
-    const svgStr = new XMLSerializer().serializeToString(clone);
-    const blob = new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' });
-    const url = URL.createObjectURL(blob);
-
+// Render an SVG clone to a PNG canvas at `scale` pixels per SVG unit (mm)
+function renderPng(clone, scale = 1) {
+  const w = +(clone.getAttribute('width') || 800);
+  const h = +(clone.getAttribute('height') || 600);
+  clone.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  clone.setAttribute('width', Math.round(w * scale));
+  clone.setAttribute('height', Math.round(h * scale));
+  const svgStr = new XMLSerializer().serializeToString(clone);
+  const url = URL.createObjectURL(new Blob([svgStr], { type: 'image/svg+xml;charset=utf-8' }));
+  return new Promise((resolve, reject) => {
     const img = new Image();
-    img.onload = async () => {
+    img.onload = () => {
       const c = document.createElement('canvas');
-      c.width = clone.getAttribute('width') || 800;
-      c.height = clone.getAttribute('height') || 600;
+      c.width = Math.round(w * scale);
+      c.height = Math.round(h * scale);
       const ctx = c.getContext('2d');
       ctx.fillStyle = '#ffffff';
       ctx.fillRect(0, 0, c.width, c.height);
-      ctx.drawImage(img, 0, 0);
+      ctx.drawImage(img, 0, 0, c.width, c.height);
       URL.revokeObjectURL(url);
-
-      const pngData = c.toDataURL('image/png');
-      // Strip the data:image/png;base64, prefix
-      const base64 = pngData.split(',')[1];
-
-      await fetch(`${MCP_API}/api/screenshot`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ image: base64 }),
-      });
+      resolve(c);
     };
+    img.onerror = (e) => { URL.revokeObjectURL(url); reject(e); };
     img.src = url;
+  });
+}
+
+async function captureAndSendScreenshot() {
+  try {
+    const c = await renderPng(cleanClone());
+    // Strip the data:image/png;base64, prefix
+    const base64 = c.toDataURL('image/png').split(',')[1];
+    await fetch(`${MCP_API}/api/screenshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ image: base64 }),
+    });
   } catch (e) {
     // Screenshot capture failed silently
   }
 }
+
+// ─── Zoom ────────────────────────────────────────────
+
+const ZOOM_MIN = 0.05, ZOOM_MAX = 8;
+const zoomLabel = document.getElementById('zoom-label');
+
+// Display size = drawing size × zoom; the viewBox keeps drawing units in mm.
+function applyZoom() {
+  const w = +canvas.getAttribute('width'), h = +canvas.getAttribute('height');
+  canvas.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  canvas.style.width = (w * state.zoom) + 'px';
+  canvas.style.height = (h * state.zoom) + 'px';
+  zoomLabel.textContent = Math.round(state.zoom * 100) + '%';
+  drawRulers(null, null);
+}
+
+// Zoom keeping the drawing point under (clientX, clientY) fixed; defaults to the view centre
+function setZoom(z, clientX, clientY) {
+  const wrapRect = canvasWrap.getBoundingClientRect();
+  if (clientX == null) {
+    clientX = wrapRect.left + canvasWrap.clientWidth / 2;
+    clientY = wrapRect.top + canvasWrap.clientHeight / 2;
+  }
+  const r = canvas.getBoundingClientRect();
+  const dx = (clientX - r.left) / state.zoom, dy = (clientY - r.top) / state.zoom;
+  state.zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z));
+  try { localStorage.setItem('svg-editor-zoom', String(state.zoom)); } catch (_) {}
+  applyZoom();
+  const r2 = canvas.getBoundingClientRect();
+  canvasWrap.scrollLeft += (r2.left + dx * state.zoom) - clientX;
+  canvasWrap.scrollTop += (r2.top + dy * state.zoom) - clientY;
+  drawRulers(null, null);
+}
+
+function zoomToFit() {
+  const w = +canvas.getAttribute('width'), h = +canvas.getAttribute('height');
+  const availW = canvasWrap.clientWidth - 40, availH = canvasWrap.clientHeight - 40;
+  setZoom(Math.min(availW / w, availH / h));
+}
+
+document.getElementById('zoom-in').addEventListener('click', () => setZoom(state.zoom * 1.25));
+document.getElementById('zoom-out').addEventListener('click', () => setZoom(state.zoom / 1.25));
+document.getElementById('zoom-label').addEventListener('click', () => setZoom(1));
+document.getElementById('zoom-fit').addEventListener('click', zoomToFit);
+
+// Ctrl/⌘ + wheel (and trackpad pinch, which the browser reports as ctrl+wheel)
+canvasWrap.addEventListener('wheel', (e) => {
+  if (!e.ctrlKey && !e.metaKey) return;
+  e.preventDefault();
+  setZoom(state.zoom * Math.exp(-e.deltaY * 0.01), e.clientX, e.clientY);
+}, { passive: false });
+
+// Canvas size changes from anywhere (MCP sync, code panel, load) → refresh display size
+new MutationObserver(applyZoom).observe(canvas, { attributes: true, attributeFilter: ['width', 'height'] });
 
 // ─── Init ────────────────────────────────────────────
 
@@ -1640,6 +1918,18 @@ ensureIds();
 showSnippetUI();
 renderLayers();
 applyLayerVisibility();
+
+// Restore the viewer's zoom, or fit a drawing that is larger than the window
+(() => {
+  let saved = null;
+  try { saved = parseFloat(localStorage.getItem('svg-editor-zoom')); } catch (_) {}
+  if (saved > 0) { state.zoom = saved; applyZoom(); }
+  else requestAnimationFrame(() => {
+    applyZoom();
+    const w = +canvas.getAttribute('width'), h = +canvas.getAttribute('height');
+    if (w > canvasWrap.clientWidth - 40 || h > canvasWrap.clientHeight - 40) zoomToFit();
+  });
+})();
 
 // Draw rulers on load and on scroll/resize
 requestAnimationFrame(() => drawRulers(null, null));
