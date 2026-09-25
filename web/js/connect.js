@@ -31,6 +31,8 @@ function snippets({ editor_url, api_url, mcp_url, token }) {
       intro: 'No MCP set up? Paste this into Claude (any version that can run shell commands). It explains the HTTP API.',
       text: `You can drive my Kerf CNC editor over HTTP with curl. I watch every change live at ${editor_url}
 Units: 1 = 1 mm. Every POST needs -H 'Content-Type: application/json'${token ? `, and every request needs${curlAuth}` : ''}.
+FIRST read the design guide (workflow, layers, 3D placement recipes, CNC rules):
+  curl -s${curlAuth} ${api_url}/guide
 
 Read the active document (tabs, layers, elements, entities, material):
   curl -s${curlAuth} ${api_url}/state
@@ -54,6 +56,47 @@ Use fill="none"; never set stroke colours (the layer decides). Group each part's
 Don't discard my unsaved work or close my tabs without asking.`,
     },
   ];
+}
+
+// Minimal Markdown → HTML for the guide (headings, lists, tables, code, bold)
+function md(text) {
+  const inline = (s) => esc(s).replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+  const out = [];
+  let list = null, table = null, para = [];
+  const flush = () => {
+    if (para.length) { out.push(`<p>${inline(para.join(' '))}</p>`); para = []; }
+    if (list) { out.push(`<${list.tag}>${list.items.map(i => `<li>${inline(i)}</li>`).join('')}</${list.tag}>`); list = null; }
+    if (table) {
+      const [head, , ...rows] = table;
+      const cells = (r) => r.replace(/^\||\|$/g, '').split('|').map(c => c.trim());
+      out.push(`<table><tr>${cells(head).map(c => `<th>${inline(c)}</th>`).join('')}</tr>${rows.map(r =>
+        `<tr>${cells(r).map(c => `<td>${inline(c)}</td>`).join('')}</tr>`).join('')}</table>`);
+      table = null;
+    }
+  };
+  for (const line of text.split('\n')) {
+    let m;
+    if ((m = line.match(/^(#{1,3}) (.*)/))) { flush(); out.push(`<h${m[1].length + 1}>${inline(m[2])}</h${m[1].length + 1}>`); }
+    else if (line.startsWith('|')) { if (!table) { flush(); table = []; } table.push(line); }
+    else if ((m = line.match(/^\s*(-|\d+\.) (.*)/))) {
+      const tag = m[1] === '-' ? 'ul' : 'ol';
+      if (list && list.tag !== tag && !/^\s/.test(line)) flush();
+      if (!list) { flush(); list = { tag, items: [] }; }
+      list.items.push(m[2]);
+    } else if (/^\s+\S/.test(line) && list) list.items[list.items.length - 1] += ' ' + line.trim();
+    else if (!line.trim()) flush();
+    else { if (list || table) flush(); para.push(line); }
+  }
+  flush();
+  return out.join('');
+}
+
+/** Help → Kerf guide: the same text Claude gets from get_guide. */
+export async function guideDialog() {
+  const r = await fetch('/api/guide');
+  if (!r.ok) return toast("Couldn't load the guide", 'error');
+  await modal({ title: 'Kerf guide', html: `<div class="guide">${md(await r.text())}</div>`,
+                buttons: [{ label: 'Close', value: true, kind: 'primary' }] });
 }
 
 export async function connectDialog() {

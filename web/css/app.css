@@ -304,6 +304,15 @@ dialog {
   box-shadow: 0 20px 60px rgba(0,0,0,.3);
 }
 dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog:has(.guide) { max-width: min(860px, calc(100vw - 32px)); width: 860px; }
+.guide { max-height: 70vh; overflow: auto; padding-right: 8px; font-size: 13px; line-height: 1.5; }
+.guide h2 { display: none; }
+.guide h3 { font-size: 14px; margin: 18px 0 6px; }
+.guide ul, .guide ol { margin: 4px 0 8px 20px; }
+.guide code { font: 11.5px var(--mono); background: #f1f1f1; padding: 0 4px; border-radius: 3px; }
+.guide table { border-collapse: collapse; font-size: 12px; margin: 8px 0; }
+.guide th, .guide td { border: 1px solid var(--border); padding: 4px 6px; text-align: left; vertical-align: top; }
+.guide th { background: #f6f6f6; }
 dialog:has(.connect) { max-width: min(760px, calc(100vw - 32px)); width: 760px; }
 .connect-tabs { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 10px; }
 .connect-tabs .btn.on { background: var(--accent); border-color: var(--accent); color: #fff; }

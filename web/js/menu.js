@@ -4,7 +4,7 @@ import { app, on, emit, selectedItems } from './state.js';
 import { icons, esc } from './ui.js';
 import * as canvas from './canvas.js';
 import * as actions from './actions.js';
-import { connectDialog } from './connect.js';
+import { connectDialog, guideDialog } from './connect.js';
 import { addLayer } from './panels.js';
 
 const mac = /Mac|iPhone|iPad/.test(navigator.platform);
@@ -99,6 +99,7 @@ const MENUS = [
     [() => app.view === '3d' ? 'PNG image (3D view)' : 'PNG image (drawing)', () => app.view === '3d' ? actions.export3d('png') : actions.exportPng()],
   ]],
   ['Help', [
+    ['Kerf guide (how Claude designs here)…', guideDialog],
     ['Connect Claude (MCP / curl)…', connectDialog],
   ]],
 ];

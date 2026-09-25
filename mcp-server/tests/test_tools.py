@@ -126,3 +126,12 @@ def test_http_guard(srv):
     assert asyncio.run(run("POST", "localhost:8765", "text/plain")) == 415
     assert asyncio.run(run("POST", "localhost:8765", "application/json", "http://evil.example")) == 403
     assert asyncio.run(run("GET", "evil.example:8765")) == 403
+
+
+def test_get_guide_whole_and_sections(srv):
+    whole = srv.get_guide()
+    assert "## 3D placement" in whole and "rotation" in whole
+    placement = srv.get_guide("placement")
+    assert placement.startswith("## 3D placement") and "## Layers" not in placement
+    assert "sections" in srv.get_guide("nope")
+    assert "get_guide" in srv.INSTRUCTIONS

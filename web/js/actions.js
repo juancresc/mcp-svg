@@ -66,12 +66,19 @@ export async function openShared(file, view) {
 export async function copyShareLink() {
   const file = app.server.file;
   if (!file) return toast('Save it to the data folder first (File → Save As) — links open saved projects', 'error');
-  const url = `${location.origin}/?open=${file.split('/').map(encodeURIComponent).join('/')}${app.view === '3d' ? '&view=3d' : ''}`;
+  // Deployed with a token: put it in the link so whoever opens it is signed in straight away
+  let token = null;
+  try { token = (await (await fetch('/api/connect')).json()).token; } catch (_) { /* local: no token */ }
+  const url = `${location.origin}/?${token ? `token=${encodeURIComponent(token)}&` : ''}`
+    + `open=${file.split('/').map(encodeURIComponent).join('/')}${app.view === '3d' ? '&view=3d' : ''}`;
+  const note = token ? ' (includes the access token: anyone with it can edit)' : '';
   try {
     await navigator.clipboard.writeText(url);
-    toast(`Link copied: ${url}`, 'ok');
+    toast(`Link copied${note}`, 'ok');
   } catch (_) {
-    await modal({ title: 'Link to this project', html: `<input class="field" readonly value="${esc(url)}" style="width:100%">`,
+    await modal({ title: 'Link to this project',
+                  html: `<input class="field" readonly value="${esc(url)}" style="width:100%">`
+                    + (token ? '<p class="muted">Includes the access token: anyone with this link can edit.</p>' : ''),
                   setup: (form) => { const i = form.querySelector('input'); i.focus(); i.select(); } });
   }
 }

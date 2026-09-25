@@ -9,6 +9,7 @@ import json
 import logging
 import mimetypes
 import os
+import re
 import sys
 import threading
 import time
@@ -58,7 +59,11 @@ EDITOR_URL = PUBLIC_URL or f"http://localhost:{HTTP_PORT}"
 store = Store(DATA_DIR)
 # Changes on every start; lets the browser notice a restart and reload the state
 INSTANCE_ID = uuid.uuid4().hex
+GUIDE = APP_DIR / "guide.md"             # the design guide: get_guide tool, /api/guide, Help menu
+GUIDE_TEXT = GUIDE.read_text(encoding="utf-8") if GUIDE.exists() else "Guide not found."
 INSTRUCTIONS = f"""Kerf — a CNC design editor shared with the user (they see every change live at {EDITOR_URL}).
+- BEFORE designing anything, call get_guide once: workflow, layers, 3D placement recipes
+  (rotation/matrix per kind of part), CNC rules and gotchas. It saves a lot of trial and error.
 - Units: 1 SVG unit = 1 mm. Stroke colour/line style come from the element's LAYER, never pass them.
 - Layers: CUT_OUTSIDE = part outlines, CUT_INSIDE = holes/slots/windows, ENGRAVE = partial depth,
   NOTES = labels/dimensions (never cut), HARDWARE = bought parts for the 3D preview (never cut).
@@ -66,7 +71,9 @@ INSTRUCTIONS = f"""Kerf — a CNC design editor shared with the user (they see e
   placement (update_group) so export_parts and the 3D preview work.
 - Several documents can be open (tabs); all tools act on the active tab (list_tabs / switch_tab).
 - get_selection tells you what the user selected ("this part"); set_selection highlights for them.
-- Check your work with take_screenshot (view "2d" or "3d"). Prefer add_svg for many shapes (one undo).
+- Check your work with take_screenshot (view "2d", "3d", "3d-exploded"). Prefer apply_ops (one undo per part).
+- Ask for the CNC machine's working area and lay the parts out in beds/sheets drawn on NOTES.
+- Name the project (set_project_name); after save_document give the share link {EDITOR_URL}/?open=<file>.
 - Never discard the user's unsaved work or close their tabs without asking."""
 try:
     from mcp.server.transport_security import TransportSecuritySettings
@@ -777,6 +784,40 @@ def design_part(description: str) -> str:
             "5. take_screenshot to verify, then save_document.")
 
 
+@tool
+def get_guide(topic: str = "") -> str:
+    """The Kerf design guide: workflow, layers, 3D placement recipes (which rotation and matrix
+    for side panels, boards, doors, mirrored parts, rods), CNC rules, SVG gotchas, children's
+    furniture. Read it before designing.
+
+    Args:
+        topic: Optional section to return instead of the whole guide, matched against the headings:
+            workflow, layers, placement, cnc, svg, children, http.
+    """
+    if not topic:
+        return GUIDE_TEXT
+    sections = re.split(r"(?m)^(?=## )", GUIDE_TEXT)
+    keys = {"placement": "3d placement", "http": "without mcp", "children": "children", "svg": "svg gotchas", "cnc": "cnc rules"}
+    want = keys.get(topic.lower().strip(), topic.lower().strip())
+    hits = [sec for sec in sections if sec.startswith("## ") and want in sec.split("\n", 1)[0].lower()]
+    return "\n".join(hits) if hits else json.dumps({"error": f"No section '{topic}'",
+                                                   "sections": [sec.split("\n", 1)[0][3:] for sec in sections if sec.startswith("## ")]})
+
+
+@mcp.prompt()
+def design_furniture(description: str, machine: str = "") -> str:
+    """Design a piece of furniture (or any multi-part object) in Kerf, ready to cut on the user's CNC."""
+    return (f"Design this in the Kerf editor: {description}\n"
+            f"CNC machine / working area: {machine or 'unknown — ask me first (e.g. 6090 = 600×900, Shapeoko XXL = 838×838, 1325 = full sheet)'}.\n"
+            "1. Call get_guide and follow it (workflow, layers, 3D placement recipes, CNC rules).\n"
+            "2. Ask me anything essential that's missing (size, material/thickness, who uses it).\n"
+            "3. new_document, set_project_name, set_material, add the layers you need (HARDWARE, pocket layers).\n"
+            "4. Work out the dimensions, then build one part per apply_ops batch (shapes + group + update_group with qty and assembly).\n"
+            "5. Lay the parts out in beds/sheets for my machine (outlines on NOTES); list parts that don't fit.\n"
+            "6. check_cnc, then take_screenshot 2d, 3d and 3d-exploded; fix what looks wrong.\n"
+            "7. Add notes (hardware list, cut order, assembly, safety), save_document and give me the share link.")
+
+
 @mcp.prompt()
 def prepare_for_cutting() -> str:
     """Checklist to get the active document ready for the CNC shop."""
@@ -1058,6 +1099,11 @@ async def post_screenshot(request):
     return web.json_response({"status": "ok"})
 
 
+async def get_guide_http(request):
+    """The design guide as Markdown (the same text as the get_guide MCP tool)."""
+    return web.Response(text=GUIDE_TEXT, content_type="text/markdown", charset="utf-8")
+
+
 async def get_connect(request):
     """Addresses (and the token, for signed-in users) for the editor's "Connect Claude" dialog."""
     proto = request.headers.get("X-Forwarded-Proto") or request.scheme
@@ -1165,6 +1211,7 @@ def run_http_server():
     r.add_get("/api/export/{kind}", get_export)
     r.add_post("/api/screenshot", post_screenshot)
     r.add_get("/api/connect", get_connect)
+    r.add_get("/api/guide", get_guide_http)
     r.add_static("/", WEB_DIR)
 
     loop = asyncio.new_event_loop()
